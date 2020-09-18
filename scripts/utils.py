@@ -16,4 +16,4 @@ def compute_zscores(df, grouper_fields, indicators, suffix='_clt_zscore'):
         del(std_ds)
         print(f'{indicator} done!')
     print('ALL DONE!')
-
+    return(df)
