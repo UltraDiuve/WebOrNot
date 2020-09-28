@@ -31,9 +31,9 @@ libs = {
     'marginpercent_clt_zscore': 'Marge % (%) - z-score',
     'lineweight_clt_zscore': 'Poids de la ligne (kg) - z-score',
     'PMVK_clt_zscore': 'PMVK (€/kg) - z-score',
-    'TV': 'Télévente (TV)',
-    'VR': 'Vente route (VR)',
-    'WEB': 'e-commerce (WEB)',
+    'TV': 'Télévente',
+    'VR': 'Vente route',
+    'WEB': 'e-commerce',
     'EDI': 'EDI',
     '2BRE': '2BRE - Episaveurs Bretagne',
     '1ALO': '1ALO - PassionFroid Est',
@@ -131,6 +131,14 @@ def process_df(df,
     return(df)
 
 
+def divide_round_up(n, d):
+    return(int((n + (d - 1))/d))
+
+
+def to_coords(i, nrows):
+    return(i % nrows, i // nrows)
+
+
 def compute_distribution(data=None,
                          indicators=None,
                          x=None,
@@ -187,17 +195,25 @@ def compute_distribution(data=None,
 def plot_distrib(data=None,
                  filter=None,
                  indicators=None,
+                 ncols=1,
                  x=None,
                  order=None,
                  hue=None,
                  hue_order=None,
                  kind='violin',
-                 percentile_selection=None,
-                 IQR_factor_selection=None,
-                 IQR_factor_plot=None,
+                 percentile_selection=.99,
+                 IQR_factor_selection=3.,
+                 IQR_factor_plot=1.5,
                  show_means=False,
                  plot_kwargs=None,
                  ):
+    '''
+    Function that plot the distribution of some indicators (boxplot or violin)
+
+    This function returns the figure and axes list in a `plt.subplots` fashion
+    for further customization of the output (e.g. changing axis limits, labels,
+    font sizes, ...)
+    '''
     # filter the input dataset
     if filter is not None:
         data = data.reset_index().loc[filter.array]
@@ -282,8 +298,11 @@ def plot_distrib(data=None,
     plot_ranges = stats.T.groupby(level=0, axis=0).agg(agg_dict)
 
     # the plotting part
-    fig, axs = plt.subplots(nrows=len(indicators),
-                            figsize=(15, 8 * len(indicators)),
+    nrows = divide_round_up(len(indicators), ncols)
+    fig, axs = plt.subplots(nrows=nrows,
+                            ncols=ncols,
+                            figsize=(15, 8 * nrows),
+                            squeeze=False,
                             )
     if plot_kwargs is None:
         plot_kwargs = dict()
@@ -300,6 +319,7 @@ def plot_distrib(data=None,
     plot_kwargs = {**defaults, **plot_kwargs}
 
     for i, indicator in enumerate(indicators):
+        ax = axs[to_coords(i, nrows)]
         if kind == 'violin':
             cols = [indicator]
             if x:
@@ -318,7 +338,7 @@ def plot_distrib(data=None,
                            y=indicator,
                            x=x,
                            hue=hue,
-                           ax=axs[i],
+                           ax=ax,
                            **plot_kwargs,
                            )
         if kind == 'boxplot':
@@ -326,7 +346,7 @@ def plot_distrib(data=None,
                         y=indicator,
                         x=x,
                         hue=hue,
-                        ax=axs[i],
+                        ax=ax,
                         **plot_kwargs,
                         )
         if show_means:
@@ -335,17 +355,17 @@ def plot_distrib(data=None,
                             y=indicator,
                             marker='s',
                             color='k',
-                            ax=axs[i])
+                            ax=ax)
 
         # Customize labels
-        axs[i].set_xlabel(lib(x), fontsize=14)
-        axs[i].set_ylabel(lib(indicator), fontsize=14)
+        ax.set_xlabel(lib(x), fontsize=14)
+        ax.set_ylabel(lib(indicator), fontsize=14)
         ticklabels = [lib(label.get_text())
-                      for label in axs[i].get_xticklabels()]
-        axs[i].set_xticklabels(ticklabels, fontsize=12)
+                      for label in ax.get_xticklabels()]
+        ax.set_xticklabels(ticklabels, fontsize=12)
 
         if IQR_factor_plot is not None:
-            axs[i].set_ylim(plot_ranges.loc[indicator, 'minimum_plot_range'],
-                            plot_ranges.loc[indicator, 'maximum_plot_range'])
+            ax.set_ylim(plot_ranges.loc[indicator, 'minimum_plot_range'],
+                        plot_ranges.loc[indicator, 'maximum_plot_range'])
 
     return(fig, axs)
