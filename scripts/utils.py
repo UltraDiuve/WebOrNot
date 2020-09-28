@@ -349,4 +349,3 @@ def plot_distrib(data=None,
                             plot_ranges.loc[indicator, 'maximum_plot_range'])
 
     return(fig, axs)
- 
