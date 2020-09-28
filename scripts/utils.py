@@ -12,6 +12,48 @@ composite_indicators_dict = {
     'lineweight': ['weight', 'linecount'],
 }
 
+libs = {
+    'margin': 'Marge (€)',
+    'brutrevenue': 'CA brut (€)',
+    'weight': 'Tonnage (kg)',
+    'linecount': 'Nombre de lignes',
+    'marginperkg': 'Marge au kilo (€/kg)',
+    'marginpercent': 'Marge % (%)',
+    'lineweight': 'Poids de la ligne (kg)',
+    'PMVK': 'PMVK (€/kg)',
+    'origin': 'Canal de commande',
+    'origin2': 'Canal de commande',
+    'margin_clt_zscore': 'Marge (€) - z-score',
+    'brutrevenue_clt_zscore': 'CA brut (€) - z-score',
+    'weight_clt_zscore': 'Tonnage (kg) - z-score',
+    'linecount_clt_zscore': 'Nombre de lignes - z-score',
+    'marginperkg_clt_zscore': 'Marge au kilo (€/kg) - z-score',
+    'marginpercent_clt_zscore': 'Marge % (%) - z-score',
+    'lineweight_clt_zscore': 'Poids de la ligne (kg) - z-score',
+    'PMVK_clt_zscore': 'PMVK (€/kg) - z-score',
+    'TV': 'Télévente (TV)',
+    'VR': 'Vente route (VR)',
+    'WEB': 'e-commerce (WEB)',
+    'EDI': 'EDI',
+    '2BRE': '2BRE - Episaveurs Bretagne',
+    '1ALO': '1ALO - PassionFroid Est',
+    '1LRO': '1LRO - PassionFroid Languedoc-Roussillon',
+    '1SOU': '1SOU - PassionFroid Sud-Ouest',
+}
+
+
+def lib(code):
+    '''
+    Function that returns the long description of a given code
+
+    From `libs` dictionary. If the code is not in this dictionary, it returns
+    the initial code.
+    '''
+    if code in libs:
+        return(libs[code])
+    else:
+        return(code)
+
 
 def compute_zscores(df, grouper_fields, indicators, suffix='_clt_zscore'):
     '''
@@ -294,8 +336,16 @@ def plot_distrib(data=None,
                             marker='s',
                             color='k',
                             ax=axs[i])
-        axs[i].set_xlabel(x)
+
+        # Customize labels
+        axs[i].set_xlabel(lib(x), fontsize=14)
+        axs[i].set_ylabel(lib(indicator), fontsize=14)
+        ticklabels = [lib(label.get_text())
+                      for label in axs[i].get_xticklabels()]
+        axs[i].set_xticklabels(ticklabels, fontsize=12)
 
         if IQR_factor_plot is not None:
             axs[i].set_ylim(plot_ranges.loc[indicator, 'minimum_plot_range'],
                             plot_ranges.loc[indicator, 'maximum_plot_range'])
+
+    return(fig, axs)
