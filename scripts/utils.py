@@ -1,8 +1,10 @@
 import numpy as np
 import warnings
 import pandas as pd
+from pandas import IndexSlice as idx
 import matplotlib.pyplot as plt
 import seaborn as sns
+from pathlib import Path
 
 
 composite_indicators_dict = {
@@ -13,6 +15,7 @@ composite_indicators_dict = {
 }
 
 libs = {
+    'orgacom': 'Succursale',
     'margin': 'Marge (€)',
     'brutrevenue': 'CA brut (€)',
     'weight': 'Tonnage (kg)',
@@ -39,16 +42,62 @@ libs = {
     '1ALO': '1ALO - PassionFroid Est',
     '1LRO': '1LRO - PassionFroid Languedoc-Roussillon',
     '1SOU': '1SOU - PassionFroid Sud-Ouest',
+    'seg1': 'Segmentation niveau 1',
+    'seg2': 'Segmentation niveau 2',
+    'seg3': 'Segmentation niveau 3',
+    'seg4': 'Segmentation niveau 4',
 }
 
+# The lines below might require improvement (with __file__ or smth else)
+path = Path('..') / 'data' / 'libelles_segments.csv'
+lib_seg = pd.read_csv(path,
+                      sep=';',
+                      encoding='latin1',
+                      header=None,
+                      names=['level', 'code', 'designation'],
+                      index_col=['level', 'code']
+                      )
+transco = dict()
+for i in range(1, 7):
+    transco['seg' + str(i)] = (
+        lib_seg.loc[idx[i, :, :]]
+               .reset_index()
+               .set_index('code')['designation']
+    )
 
-def lib(code):
+
+def seg_lib(code, level):
+    '''
+    Returns the designation of segment with code code and at level level
+    '''
+    try:
+        return(transco[level][code])
+    except KeyError:
+        return(transco['seg' + str(level)][code])
+
+
+def domain_lib(code, domain):
+    '''
+    Returns the designation of code code in domain domain
+    '''
+    if domain[:3] == 'seg':
+        return(seg_lib(code, domain))
+    else:
+        raise KeyError(f'Unknown domain: {domain}')
+
+
+def lib(code, domain=None):
     '''
     Function that returns the long description of a given code
 
     From `libs` dictionary. If the code is not in this dictionary, it returns
     the initial code.
     '''
+    if domain is not None:
+        try:
+            return(domain_lib(code, domain))
+        except KeyError:
+            pass
     if code in libs:
         return(libs[code])
     else:
@@ -168,7 +217,12 @@ def compute_distribution(data=None,
                              .sort_index(axis=1)
              )
 
-    # IQR = interquartile range (brute)
+    # definitiions: 
+    # stats.iloc[4] =  1% (example, 1 - percentile selection)
+    # stats.iloc[5] = 25%
+    # stats.iloc[7] = 75%
+    # stats.iloc[8] = 99% (example, percentile selection)
+    # IQR = interquartile range (brut)
     stats.loc['IQR'] = stats.iloc[7] - stats.iloc[5]
     # minimum_selection => le "minimum" au sens de
     # 1er quartile - IQR * facteur de sélection
@@ -187,9 +241,45 @@ def compute_distribution(data=None,
     if IQR_factor_plot is not None:
         stats.loc['minimum_plot_range'] = (stats.iloc[5] -
                                            IQR_factor_plot * stats.loc['IQR'])
+        stats.loc['minimum_plot_range'] = pd.concat([
+            stats.loc['minimum_plot_range'], stats.loc['min']
+        ], axis=1).max(axis=1)
+
         stats.loc['maximum_plot_range'] = (stats.iloc[7] +
                                            IQR_factor_plot * stats.loc['IQR'])
+        stats.loc['maximum_plot_range'] = pd.concat([
+            stats.loc['maximum_plot_range'], stats.loc['max']
+        ], axis=1).min(axis=1)
     return(stats)
+
+
+def compute_means(data=None,
+                  groupers=None,
+                  indicators=None,
+                  ):
+    '''
+    Computes size of groups and correct means for composite indicators
+    '''
+    means = (data.groupby(groupers, observed=True)
+                 .size()
+                 .rename('size')
+                 .to_frame()
+             )
+    means = means.join(
+        data[groupers + indicators].groupby(groupers, observed=True).mean()
+        )
+    for indicator in indicators:
+        if indicator in composite_indicators_dict:
+            components = (data.loc[:, groupers +
+                                   composite_indicators_dict[indicator]]
+                              .groupby(groupers)
+                              .sum()
+                          )
+            means[indicator] = (
+                components[composite_indicators_dict[indicator][0]] /
+                components[composite_indicators_dict[indicator][1]]
+                )
+    return(means)
 
 
 def plot_distrib(data=None,
@@ -203,9 +293,11 @@ def plot_distrib(data=None,
                  kind='violin',
                  percentile_selection=.99,
                  IQR_factor_selection=3.,
-                 IQR_factor_plot=1.5,
+                 IQR_factor_plot=None,
                  show_means=False,
                  plot_kwargs=None,
+                 translate=True,
+                 fontsizes_kwargs=None,
                  ):
     '''
     Function that plot the distribution of some indicators (boxplot or violin)
@@ -213,10 +305,18 @@ def plot_distrib(data=None,
     This function returns the figure and axes list in a `plt.subplots` fashion
     for further customization of the output (e.g. changing axis limits, labels,
     font sizes, ...)
+    translate : if True, translate every code to long labels. Else, pass an
+    iterable of 'x', 'xaxis' or 'indicator'. 'hue' not yet implemented.
     '''
     # filter the input dataset
     if filter is not None:
         data = data.reset_index().loc[filter.array]
+
+    # if orders are not given, infer them from data
+    if x is not None and order is None:
+        order = list(data[x].unique())
+    if hue is not None and hue_order is None:
+        hue_order = list(data[hue].unique())
 
     # convert grouping fields to categorical data type
     if x is not None:
@@ -234,25 +334,10 @@ def plot_distrib(data=None,
         if hue:
             groupers.append(hue)
 
-        means = (data.groupby(groupers, observed=True)
-                     .size()
-                     .rename('size')
-                     .to_frame()
-                 )
-        means = means.join(
-            data[groupers + indicators].groupby(groupers, observed=True).mean()
-            )
-        for indicator in indicators:
-            if indicator in composite_indicators_dict:
-                components = (data.loc[:, groupers +
-                                       composite_indicators_dict[indicator]]
-                                  .groupby(groupers)
-                                  .sum()
+        means = compute_means(data=data,
+                              groupers=groupers,
+                              indicators=indicators
                               )
-                means[indicator] = (
-                    components[composite_indicators_dict[indicator][0]] /
-                    components[composite_indicators_dict[indicator][1]]
-                    )
         # compute means abscissas
         means = means.reset_index()
         means['abscissa'] = (means[x].apply(lambda x: order.index(x))
@@ -292,7 +377,7 @@ def plot_distrib(data=None,
     # raise a warning
     if kind == 'boxplot' and (percentile_selection is not None or
                               IQR_factor_selection is not None):
-        warnings.warn('Selection parameters have been given for'
+        warnings.warn('Selection parameters have been given for '
                       'a boxplot. They will be ignored.')
 
     plot_ranges = stats.T.groupby(level=0, axis=0).agg(agg_dict)
@@ -358,11 +443,33 @@ def plot_distrib(data=None,
                             ax=ax)
 
         # Customize labels
-        ax.set_xlabel(lib(x), fontsize=14)
-        ax.set_ylabel(lib(indicator), fontsize=14)
-        ticklabels = [lib(label.get_text())
-                      for label in ax.get_xticklabels()]
-        ax.set_xticklabels(ticklabels, fontsize=12)
+        fontsizes_def = {
+            'xaxis': 14,
+            'indicator': 14,
+            'x': 12,
+        }
+        if fontsizes_kwargs is None:
+            fontsizes_kwargs = dict()
+        fontsizes_kwargs = {**fontsizes_def, **fontsizes_kwargs}
+
+        if translate == True or 'xaxis' in translate:  # noqa: E712
+            ax.set_xlabel(lib(x), fontsize=fontsizes_kwargs['xaxis'])
+        else:
+            ax.set_xlabel(x, fontsize=fontsizes_kwargs['xaxis'])
+
+        if translate == True or 'indicator' in translate:  # noqa: E712
+            ax.set_ylabel(lib(indicator),
+                          fontsize=fontsizes_kwargs['indicator'])
+        else:
+            ax.set_ylabel(indicator, fontsize=fontsizes_kwargs['indicator'])
+
+        if translate == True or 'x' in translate:  # noqa: E712
+            ticklabels = [lib(label.get_text(), domain=x)
+                          for label in ax.get_xticklabels()]
+        else:
+            ticklabels = [label.get_text()
+                          for label in ax.get_xticklabels()]
+        ax.set_xticklabels(ticklabels, fontsize=fontsizes_kwargs['x'])
 
         if IQR_factor_plot is not None:
             ax.set_ylim(plot_ranges.loc[indicator, 'minimum_plot_range'],
