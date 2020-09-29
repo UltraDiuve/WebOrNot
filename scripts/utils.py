@@ -5,6 +5,7 @@ from pandas import IndexSlice as idx
 import matplotlib.pyplot as plt
 import seaborn as sns
 from pathlib import Path
+from IPython.display import display
 
 
 composite_indicators_dict = {
@@ -24,6 +25,7 @@ libs = {
     'marginpercent': 'Marge % (%)',
     'lineweight': 'Poids de la ligne (kg)',
     'PMVK': 'PMVK (€/kg)',
+    'size': 'Nb commandes',
     'origin': 'Canal de commande',
     'origin2': 'Canal de commande',
     'margin_clt_zscore': 'Marge (€) - z-score',
@@ -46,6 +48,25 @@ libs = {
     'seg2': 'Segmentation niveau 2',
     'seg3': 'Segmentation niveau 3',
     'seg4': 'Segmentation niveau 4',
+}
+
+formats = {
+    'weight': '{:.2f} kg',
+    'margin': '{:.2f} €',
+    'brutrevenue': '{:.2f} €',
+    'linecount': '{:.2f}',
+    'PMVK': '{:.2f} €/kg',
+    'marginperkg': '{:.2f} €/kg',
+    'marginpercent': '{:.2%}',
+    'lineweight': '{:.2f} kg',
+    'weight_clt_zscore': '{:.3f}',
+    'margin_clt_zscore': '{:.3f}',
+    'brutrevenue_clt_zscore': '{:.3f}',
+    'linecount_clt_zscore': '{:.3f}',
+    'PMVK_clt_zscore': '{:.3f}',
+    'marginperkg_clt_zscore': '{:.3f}',
+    'marginpercent_clt_zscore': '{:.3f}',
+    'lineweight_clt_zscore': '{:.3f}',    
 }
 
 # The lines below might require improvement (with __file__ or smth else)
@@ -280,6 +301,35 @@ def compute_means(data=None,
                 components[composite_indicators_dict[indicator][1]]
                 )
     return(means)
+
+
+def pretty_means(data=None,
+                 groupers=None,
+                 indicators=None,
+                 formats=formats,
+                 translate=['columns'],
+                 ):
+    formatted = compute_means(data=data,
+                              groupers=groupers,
+                              indicators=indicators,
+                              )
+    formatted = formatted.reset_index()
+    for to_translate in translate:
+        try:
+            formatted[to_translate] = formatted[to_translate].map(libs)
+        except KeyError:
+            pass
+    if 'columns' in translate:
+        formats = {libs[col_code]: format_
+                   for col_code, format_ in formats.items()}
+        formatted = formatted.rename(libs, axis=1)
+
+    formatted = (
+        formatted.style
+                 .format(formats)
+                 .hide_index()
+    )
+    display(formatted)
 
 
 def plot_distrib(data=None,
