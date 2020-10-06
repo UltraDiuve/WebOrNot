@@ -351,7 +351,8 @@ def pretty_means(data=None,
     formatted = formatted.reset_index()
     for to_translate in translate:
         try:
-            formatted[to_translate] = formatted[to_translate].map(libs)
+            fun = partial(lib, domain=to_translate)
+            formatted[to_translate] = formatted[to_translate].map(fun)
         except KeyError:
             pass
     if 'columns' in translate:
@@ -948,7 +949,6 @@ def bk_bubbles(doc, data=None, filters=None):
 
     def update_dataframe():
         global to_plot
-        print('Updating Dataframe !!!')
         to_plot = select_data()
         update_CDS()
 
@@ -1015,10 +1015,13 @@ def bk_bubbles(doc, data=None, filters=None):
         p.y_range.start = -2000000
         p.xaxis.axis_label = lib(select_x.value)
         p.yaxis.axis_label = lib(select_y.value)
-        p.title.text = (
+        title = (
             f'{lib(select_y.value)} en fonction de {lib(select_x.value)} par '
             f'{lib(select_bubble.value)}'
         )
+        if select_line.value != 'None':
+            title += f' et {lib(select_line.value)}'
+        p.title.text = title
 
     update_dataframe()
 
