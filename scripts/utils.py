@@ -567,10 +567,15 @@ def bk_histo_seg(doc,
                  source_df=None,
                  segs=None,
                  filters=None,
-                 filters_exclude=None):
+                 filters_exclude=None,
+                 plot_kwargs=None,
+                 ):
     '''
     Bokeh server app that enables to draw stacked bar plot on segmentation
     '''
+
+    if plot_kwargs is None:
+        plot_kwargs = dict()
 
     # define controls
     # select: choose indicator from list
@@ -643,7 +648,11 @@ def bk_histo_seg(doc,
     df = compute_indicator(select_data(), indicator_map[select.value])
     source = ColumnDataSource(data=df)
 
-    p = figure(x_range=FactorRange(*list(df.index)), plot_width=900, )
+    p = figure(
+        x_range=FactorRange(*list(df.index)),
+        plot_width=900,
+        **plot_kwargs,
+        )
     p.vbar_stack(df.columns,
                  x='_'.join(segs) + '_orgacom',
                  source=source,
@@ -673,7 +682,7 @@ def bk_bubbles(doc, data=None, filters=None):
             'ZI': mcolorpalette[4],
             'ZJ': mcolorpalette[5],
             'ZK': mcolorpalette[6],
-            'ZL': mcolorpalette[7],
+            'ZL': 'orange',
         },
         'origin2': {
             'TV': mcolorpalette[0],
@@ -879,18 +888,18 @@ def bk_bubbles(doc, data=None, filters=None):
         size=[],
         hover_field1=[],
         hover_field2=[],
+        fill_lib=[],
     )
     hover_fields_cols = {hover_field: [] for hover_field in hover_fields}
     source_cols = {**source_cols, **hover_fields_cols}
     source = ColumnDataSource(data=source_cols)
     line_CDS = ColumnDataSource(dict(
-        xs=[],  # [[0, 100000000], [200000000, 350000000]],
-        ys=[],  # [[0, 10000000], [20000000, 35000000]],
-        color=[],  # ['red', 'green'],
+        xs=[],
+        ys=[],
+        color=[],
+        line_lib=[],
     ))
     to_plot = select_data()
-    with pd.option_context('display.max_columns', None):
-        display(to_plot)
 
     def update_CDS():
         global to_plot
@@ -908,6 +917,8 @@ def bk_bubbles(doc, data=None, filters=None):
                     for axis in line_axes],
                 color=[colormaps[select_line.value][axis]
                        for axis in line_axes],
+                line_lib=[lib(axis, domain=select_line.value)
+                          for axis in line_axes],
                 )
         else:
             to_plot = to_plot.sort_values(select_x.value)
@@ -916,12 +927,14 @@ def bk_bubbles(doc, data=None, filters=None):
                 xs=[],
                 ys=[],
                 color=[],
+                line_lib=[],
             )
         source_data = dict(
             x=to_plot[select_x.value],
             y=to_plot[select_y.value],
             fill_color=to_plot[select_bubble.value + '_c'],
             size=to_plot[select_size.value + '_s'],
+            fill_lib=to_plot[select_bubble.value + '_lib'],
             # hover_field1=to_plot[select_line],
             # hover_field2=to_plot[select_bubble],
         )
@@ -931,6 +944,7 @@ def bk_bubbles(doc, data=None, filters=None):
                 **{'line_color': to_plot[select_line.value + '_c']},
                 }
         source.data = source_data
+        update_plot()
 
     def update_dataframe():
         global to_plot
@@ -965,6 +979,7 @@ def bk_bubbles(doc, data=None, filters=None):
         line_color='color',
         line_width=2,
         source=line_CDS,
+        legend_field='line_lib',
         )
     circles = p.circle(
         source=source,
@@ -973,8 +988,10 @@ def bk_bubbles(doc, data=None, filters=None):
         size='size',  # size
         fill_color='fill_color',
         line_color='line_color',
-        line_width=line_width,
+        line_width=.3,
+        legend_field='fill_lib',
         )
+    p.legend.location = 'bottom_right'
     # tooltips_fields = [
     #     'seg3_lib',
     #     'origin2_lib',
@@ -991,6 +1008,17 @@ def bk_bubbles(doc, data=None, filters=None):
     #     tooltips=tooltips,
     # )
     # p.add_tools(hover)
+
+    def update_plot():
+        nonlocal p
+        p.x_range.start = -2000000
+        p.y_range.start = -2000000
+        p.xaxis.axis_label = lib(select_x.value)
+        p.yaxis.axis_label = lib(select_y.value)
+        p.title.text = (
+            f'{lib(select_y.value)} en fonction de {lib(select_x.value)} par '
+            f'{lib(select_bubble.value)}'
+        )
 
     update_dataframe()
 
