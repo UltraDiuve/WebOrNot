@@ -3,16 +3,29 @@ import warnings
 import pandas as pd
 from pandas import IndexSlice as idx
 import matplotlib.pyplot as plt
+import matplotlib.colors as mcolor
 import seaborn as sns
 from pathlib import Path
+from functools import partial
 from IPython.display import display
+from bokeh.plotting import figure
+from bokeh.models import ColumnDataSource, FactorRange  # HoverTool,
+from bokeh.models.widgets import Select, DatePicker, CheckboxGroup
+from bokeh.layouts import row, column
+from bokeh.models.formatters import NumeralTickFormatter
+from datetime import date
 
 
+mcolorpalette = list(mcolor.TABLEAU_COLORS.values())
+
+# formula is:
+# composite indicator = component[0] / component[1]
 composite_indicators_dict = {
     'PMVK': ['brutrevenue', 'weight'],
     'marginperkg': ['margin', 'weight'],
     'marginpercent': ['margin', 'brutrevenue'],
     'lineweight': ['weight', 'linecount'],
+    'lineperorder': ['linecount', 'ordercount'],
 }
 
 libs = {
@@ -24,10 +37,12 @@ libs = {
     'marginperkg': 'Marge au kilo (€/kg)',
     'marginpercent': 'Marge % (%)',
     'lineweight': 'Poids de la ligne (kg)',
+    'lineperorder': 'Nombre de lignes par commande',
     'PMVK': 'PMVK (€/kg)',
     'size': 'Nb commandes',
     'origin': 'Canal de commande',
     'origin2': 'Canal de commande',
+    'origin2_lib': 'Canal de commande',
     'margin_clt_zscore': 'Marge (€) - z-score',
     'brutrevenue_clt_zscore': 'CA brut (€) - z-score',
     'weight_clt_zscore': 'Tonnage (kg) - z-score',
@@ -48,6 +63,10 @@ libs = {
     'seg2': 'Segmentation niveau 2',
     'seg3': 'Segmentation niveau 3',
     'seg4': 'Segmentation niveau 4',
+    'seg1_lib': 'Segmentation niveau 1',
+    'seg2_lib': 'Segmentation niveau 2',
+    'seg3_lib': 'Segmentation niveau 3',
+    'seg4_lib': 'Segmentation niveau 4',
 }
 
 formats = {
@@ -59,6 +78,7 @@ formats = {
     'marginperkg': '{:.2f} €/kg',
     'marginpercent': '{:.2%}',
     'lineweight': '{:.2f} kg',
+    'lineperorder': '{:.2f}',
     'weight_clt_zscore': '{:.3f}',
     'margin_clt_zscore': '{:.3f}',
     'brutrevenue_clt_zscore': '{:.3f}',
@@ -66,7 +86,7 @@ formats = {
     'PMVK_clt_zscore': '{:.3f}',
     'marginperkg_clt_zscore': '{:.3f}',
     'marginpercent_clt_zscore': '{:.3f}',
-    'lineweight_clt_zscore': '{:.3f}',    
+    'lineweight_clt_zscore': '{:.3f}',
 }
 
 # The lines below might require improvement (with __file__ or smth else)
@@ -238,7 +258,7 @@ def compute_distribution(data=None,
                              .sort_index(axis=1)
              )
 
-    # definitiions: 
+    # definitions:
     # stats.iloc[4] =  1% (example, 1 - percentile selection)
     # stats.iloc[5] = 25%
     # stats.iloc[7] = 75%
@@ -272,6 +292,21 @@ def compute_distribution(data=None,
             stats.loc['maximum_plot_range'], stats.loc['max']
         ], axis=1).min(axis=1)
     return(stats)
+
+
+def compute_composite_indicators(data=None,
+                                 indicator_defs=composite_indicators_dict):
+    df = pd.DataFrame()
+    for composite_indicator, components in indicator_defs.items():
+        try:
+            # data[composite_indicator] = (
+            df[composite_indicator] = (
+                data[components[0]] / data[components[1]]
+            )
+        except KeyError:
+            pass
+    # return(data)
+    return(pd.concat([data, df], axis=1))
 
 
 def compute_means(data=None,
@@ -526,3 +561,445 @@ def plot_distrib(data=None,
                         plot_ranges.loc[indicator, 'maximum_plot_range'])
 
     return(fig, axs)
+
+
+def bk_histo_seg(doc,
+                 source_df=None,
+                 segs=None,
+                 filters=None,
+                 filters_exclude=None):
+    '''
+    Bokeh server app that enables to draw stacked bar plot on segmentation
+    '''
+
+    # define controls
+    # select: choose indicator from list
+    indicator_map = {
+        'Marge (€)': 'margin',
+        'CA brut (€)': 'brutrevenue',
+        'Tonnage (kg)': 'weight',
+    }
+    select = Select(title="Indicateur",
+                    options=list(indicator_map),
+                    value=list(indicator_map)[1])
+    # datepickers : filter data on date
+    min_date, max_date = date(2017, 7, 3), date(2020, 8, 30)
+    min_def_date, max_def_date = date(2019, 1, 1), date(2019, 12, 31)
+    datepickers = [
+        DatePicker(title='Date de début',
+                   value=min_def_date,
+                   min_date=min_date,
+                   max_date=max_date),
+        DatePicker(title='Date de fin',
+                   value=max_def_date,
+                   min_date=min_date,
+                   max_date=max_date),
+    ]
+
+    controls = [select, *datepickers]
+
+    # compute data source
+    origins = ['TV', 'VR', 'WEB', 'EDI']
+
+    def compute_indicator(df, indicator):
+        temp = (
+            df.groupby(['origin2'] + segs + ['orgacom'],
+                       observed=True,)[indicator]
+              .sum()
+              .unstack('origin2', fill_value=0.)
+              .reindex(columns=origins)
+              .reset_index()
+        )
+        for seg in segs:
+            temp[seg] = temp[seg].map(transco[seg])
+        temp = temp.set_index(segs + ['orgacom'])
+        return(temp)
+
+    def select_data():
+        date_range = [datepickers[0].value, datepickers[1].value]
+        selected = source_df.loc[
+            (source_df.date >= pd.to_datetime(date_range[0])) &
+            (source_df.date <= pd.to_datetime(date_range[1]))
+        ]
+        for attribute, filter_values in filters.items():
+            selected = selected.loc[
+                selected[attribute].isin(filter_values)
+            ]
+        for attribute, filter_values in filters_exclude.items():
+            selected = selected.loc[
+                ~selected[attribute].isin(filter_values)
+            ]
+        return(selected)
+
+    def update():
+        indicator = indicator_map[select.value]
+        df = select_data()
+        grouped = compute_indicator(df, indicator)
+        source.data = ColumnDataSource.from_df(grouped)
+
+    for control in controls:
+        control.on_change('value', lambda attr, old, new: update())
+
+    df = compute_indicator(select_data(), indicator_map[select.value])
+    source = ColumnDataSource(data=df)
+
+    p = figure(x_range=FactorRange(*list(df.index)), plot_width=900, )
+    p.vbar_stack(df.columns,
+                 x='_'.join(segs) + '_orgacom',
+                 source=source,
+                 width=.9,
+                 color=list(mcolor.TABLEAU_COLORS.values())[:len(df.columns)],
+                 legend_label=list(df.columns),
+                 )
+    p.xaxis.major_label_orientation = 1
+    p.yaxis.formatter = NumeralTickFormatter(format="0")
+
+    doc.add_root(column(select, row(*datepickers), p))
+
+
+def bk_bubbles(doc, data=None, filters=None):
+    max_size = 50
+    line_width = 2.5
+    plot_indicators = ['brutrevenue', 'margin', 'weight', 'linecount']
+    plot_analysis_axes = ['seg3', 'origin2']
+    colormaps = {
+        'seg1': {
+            'Z1': 'blue',
+            'Z2': 'red',
+            'Z3': 'green',
+            'Z4': 'orange',
+        },
+        'seg3': {
+            'ZI': mcolorpalette[4],
+            'ZJ': mcolorpalette[5],
+            'ZK': mcolorpalette[6],
+            'ZL': mcolorpalette[7],
+        },
+        'origin2': {
+            'TV': mcolorpalette[0],
+            'VR': mcolorpalette[1],
+            'WEB': mcolorpalette[2],
+            'EDI': mcolorpalette[3],
+        }
+    }
+    hover_fields = [
+        'margin',
+        'brutrevenue',
+        'marginperkg',
+        'marginpercent',
+        'lineperorder',
+    ]
+    # jsformats_tooltips = {
+    #         'seg3_lib': '',
+    #         'origin2_lib': '',
+    #         'margin': '{0.00 a}€',
+    #         'weight': '{0.00 a}kg',
+    #         'brutrevenue': '{0.00 a}€',
+    #         'marginperkg': '{0.000} €/kg',
+    #         'marginpercent': '{0.00 %}',
+    #         'lineperorder': '{0.00}',
+    # }
+
+    # x = 'weight'
+    # y = 'margin'
+    # line_color = 'seg3_c'
+    # fill_color = 'origin2_c'
+    # size = 'weight_s'
+
+    # Widgets definition
+    # axes customization
+    select_x = Select(
+        title="Axe x",
+        options=list(zip(
+            plot_indicators,
+            list(map(lib, plot_indicators))
+        )),
+        value=plot_indicators[0],
+        width=200,
+        sizing_mode='stretch_width',
+        )
+    select_y = Select(
+        title="Axe y",
+        options=list(zip(
+            plot_indicators,
+            list(map(lib, plot_indicators))
+        )),
+        value=plot_indicators[1],
+        width=200,
+        sizing_mode='stretch_width',
+        )
+    select_size = Select(
+        title="Taille des bulles",
+        options=list(zip(
+            plot_indicators,
+            list(map(lib, plot_indicators))
+        )),
+        value=plot_indicators[2],
+        width=200,
+        sizing_mode='stretch_width',
+        )
+    axes_widgets = [select_x, select_y, select_size]
+    for control in axes_widgets:
+        control.on_change('value', lambda attr, old, new: update_CDS())
+    axes_widgets = column(*axes_widgets)
+
+    running = False
+
+    def change_group(old, new, which_control):
+        nonlocal running
+        if running:
+            return
+        running = True
+        if which_control == 'bubble':
+            other = select_line
+        if which_control == 'line':
+            other = select_bubble
+        if new == other.value:
+            other.value = old
+            update_CDS()
+        else:
+            update_dataframe()
+        running = False
+
+    # grouping customization
+    select_bubble = Select(
+        title="Couleur des bulles",
+        options=list(zip(
+            plot_analysis_axes,
+            list(map(lib, plot_analysis_axes))
+        )),
+        value=plot_analysis_axes[1],
+        width=200,
+        sizing_mode='stretch_width',
+        )
+    select_line = Select(
+        title="Groupes de bulles",
+        options=[
+            ('None', 'Aucun'),
+            *list(zip(
+                plot_analysis_axes,
+                list(map(lib, plot_analysis_axes))))
+        ],
+        value=plot_analysis_axes[0],
+        width=200,
+        sizing_mode='stretch_width',
+        )
+    groups_widgets = [select_bubble, select_line]
+    select_bubble.on_change(
+        'value',
+        lambda attr, old, new: change_group(old, new, 'bubble')
+        )
+    select_line.on_change(
+        'value',
+        lambda attr, old, new: change_group(old, new, 'line')
+        )
+    # for control in groups_widgets:
+    #     control.on_change('value', lambda attr, old, new: update_dataframe())
+    groups_widgets = column(groups_widgets)
+
+    # filter customization
+    filter_labels = ['Uniquement RHD', "Retirer O'Tacos"]
+    select_filters = CheckboxGroup(labels=filter_labels,
+                                   active=[0],
+                                   )
+    min_date, max_date = date(2017, 7, 3), date(2020, 8, 30)
+    min_def_date, max_def_date = date(2019, 1, 1), date(2019, 12, 31)
+    datepickers = [
+        DatePicker(title='Date de début',
+                   value=min_def_date,
+                   min_date=min_date,
+                   max_date=max_date,
+                   width=150,
+                   sizing_mode='stretch_width',
+                   ),
+        DatePicker(title='Date de fin',
+                   value=max_def_date,
+                   min_date=min_date,
+                   max_date=max_date,
+                   width=150,
+                   sizing_mode='stretch_width',
+                   ),
+    ]
+    filter_widgets = column(select_filters, row(*datepickers))
+
+    def select_data():
+        # aggregate data
+        groupers = [select_bubble.value]
+        if select_line.value != 'None':
+            groupers.append(select_line.value)
+        to_plot = (
+            data
+            .loc[filters]
+            .groupby(groupers, observed=True)[plot_indicators]
+            .sum()
+        )
+        sizes = (
+            data
+            .loc[filters]
+            .groupby(groupers, observed=True)
+            .size()
+            .rename('ordercount')
+        )
+        to_plot = to_plot.join(sizes).reset_index()
+        del(sizes)
+
+        # compute composite indicators
+        # for indicator, components in utils.composite_indicators_dict:
+        to_plot = compute_composite_indicators(to_plot)
+
+        # compute designations
+        for code in groupers:
+            if (len(code) == 4) & (code[:3] == 'seg'):
+                fun = partial(lib, domain='seg' + code[3])
+            else:
+                fun = lib
+            to_plot[code + '_lib'] = to_plot[code].apply(fun)
+
+        # compute sizes
+        numeric_cols = (to_plot.select_dtypes(include=[np.number]).columns
+                        .tolist())
+        for indicator in numeric_cols:
+            to_plot[indicator + '_s'] = to_plot[indicator] ** 0.5
+            to_plot[indicator + '_s'] = (to_plot[indicator + '_s'] * max_size /
+                                         to_plot[indicator + '_s'].max())
+
+        # compute colors
+        for axis, colors in colormaps.items():
+            try:
+                to_plot[axis + '_c'] = to_plot[axis].map(colors)
+            except KeyError:
+                pass
+        return(to_plot)
+
+    source_cols = dict(
+        x=[],
+        y=[],
+        line_color=[],
+        fill_color=[],
+        size=[],
+        hover_field1=[],
+        hover_field2=[],
+    )
+    hover_fields_cols = {hover_field: [] for hover_field in hover_fields}
+    source_cols = {**source_cols, **hover_fields_cols}
+    source = ColumnDataSource(data=source_cols)
+    line_CDS = ColumnDataSource(dict(
+        xs=[],  # [[0, 100000000], [200000000, 350000000]],
+        ys=[],  # [[0, 10000000], [20000000, 35000000]],
+        color=[],  # ['red', 'green'],
+    ))
+    to_plot = select_data()
+    with pd.option_context('display.max_columns', None):
+        display(to_plot)
+
+    def update_CDS():
+        global to_plot
+        if select_line.value != 'None':
+            to_plot = to_plot.sort_values([select_line.value,
+                                           select_x.value])
+            # line_color = to_plot[select_line.value + '_c']
+            line_axes = to_plot[select_line.value].unique()
+            line_CDS.data = dict(
+                xs=[to_plot.loc[to_plot[select_line.value] == axis,
+                                select_x.value]
+                    for axis in line_axes],
+                ys=[to_plot.loc[to_plot[select_line.value] == axis,
+                                select_y.value]
+                    for axis in line_axes],
+                color=[colormaps[select_line.value][axis]
+                       for axis in line_axes],
+                )
+        else:
+            to_plot = to_plot.sort_values(select_x.value)
+            # line_color = 'blue'
+            line_CDS.data = dict(
+                xs=[],
+                ys=[],
+                color=[],
+            )
+        source_data = dict(
+            x=to_plot[select_x.value],
+            y=to_plot[select_y.value],
+            fill_color=to_plot[select_bubble.value + '_c'],
+            size=to_plot[select_size.value + '_s'],
+            # hover_field1=to_plot[select_line],
+            # hover_field2=to_plot[select_bubble],
+        )
+        if select_line.value != 'None':
+            source_data = {
+                **source_data,
+                **{'line_color': to_plot[select_line.value + '_c']},
+                }
+        source.data = source_data
+
+    def update_dataframe():
+        global to_plot
+        print('Updating Dataframe !!!')
+        to_plot = select_data()
+        update_CDS()
+
+    # source_by_seg = dict()
+    # for seg in to_plot.seg3.unique():
+    #     source_by_seg[seg] = ColumnDataSource(
+    # to_plot.loc[to_plot.seg3 == seg])
+
+    p = figure(plot_height=500, plot_width=800)
+    p.yaxis.formatter = NumeralTickFormatter(format='0')
+    p.xaxis.formatter = NumeralTickFormatter(format='0')
+    # https://docs.bokeh.org/en/latest/docs/reference/models/glyphs/multi_line.html
+    # lines = dict()
+    # for seg in to_plot.seg3.unique():
+    #     try:
+    #         color = colormaps['seg3'][seg]
+    #     except KeyError:
+    #         color = 'black'
+    #     lines[seg] = p.line(source=source_by_seg[seg],
+    #                         x=x,
+    #                         y=y,
+    #                         color=color,
+    #                         line_width=line_width,
+    #                         )
+    seg_lines = p.multi_line(
+        xs='xs',
+        ys='ys',
+        line_color='color',
+        line_width=2,
+        source=line_CDS,
+        )
+    circles = p.circle(
+        source=source,
+        x='x',
+        y='y',
+        size='size',  # size
+        fill_color='fill_color',
+        line_color='line_color',
+        line_width=line_width,
+        )
+    # tooltips_fields = [
+    #     'seg3_lib',
+    #     'origin2_lib',
+    #     'margin',
+    #     'brutrevenue',
+    #     'marginperkg',
+    #     'marginpercent',
+    #     'lineperorder',
+    # ]
+    # tooltips = [(lib(field), '@' + field + jsformats_tooltips[field])
+    #             for field in tooltips_fields]
+    # hover = HoverTool(
+    #     renderers=[circles],
+    #     tooltips=tooltips,
+    # )
+    # p.add_tools(hover)
+
+    update_dataframe()
+
+    doc.add_root(
+        column(
+            row(axes_widgets,
+                groups_widgets,
+                filter_widgets,
+                sizing_mode='stretch_width'),
+            p,
+            )
+        )
