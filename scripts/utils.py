@@ -299,13 +299,11 @@ def compute_composite_indicators(data=None,
     df = pd.DataFrame()
     for composite_indicator, components in indicator_defs.items():
         try:
-            # data[composite_indicator] = (
             df[composite_indicator] = (
                 data[components[0]] / data[components[1]]
             )
         except KeyError:
             pass
-    # return(data)
     return(pd.concat([data, df], axis=1))
 
 
@@ -671,6 +669,16 @@ def bk_bubbles(doc, data=None, filters=None):
     max_size = 50
     line_width = 2.5
     plot_indicators = ['brutrevenue', 'margin', 'weight', 'linecount']
+    select_indicators = [
+        'brutrevenue',
+        'margin',
+        'weight',
+        'linecount',
+        'PMVK',
+        'marginperkg',
+        'marginpercent',
+        'lineweight',
+    ]
     plot_analysis_axes = ['seg3', 'origin2']
     colormaps = {
         'seg1': {
@@ -721,30 +729,30 @@ def bk_bubbles(doc, data=None, filters=None):
     select_x = Select(
         title="Axe x",
         options=list(zip(
-            plot_indicators,
-            list(map(lib, plot_indicators))
+            select_indicators,
+            list(map(lib, select_indicators))
         )),
-        value=plot_indicators[0],
+        value=select_indicators[0],
         width=200,
         sizing_mode='stretch_width',
         )
     select_y = Select(
         title="Axe y",
         options=list(zip(
-            plot_indicators,
-            list(map(lib, plot_indicators))
+            select_indicators,
+            list(map(lib, select_indicators))
         )),
-        value=plot_indicators[1],
+        value=select_indicators[1],
         width=200,
         sizing_mode='stretch_width',
         )
     select_size = Select(
         title="Taille des bulles",
         options=list(zip(
-            plot_indicators,
-            list(map(lib, plot_indicators))
+            select_indicators,
+            list(map(lib, select_indicators))
         )),
-        value=plot_indicators[2],
+        value=select_indicators[2],
         width=200,
         sizing_mode='stretch_width',
         )
@@ -901,6 +909,8 @@ def bk_bubbles(doc, data=None, filters=None):
         line_lib=[],
     ))
     to_plot = select_data()
+    with pd.option_context('display.max_columns', None):
+        display(to_plot)
 
     def update_CDS():
         global to_plot
@@ -952,27 +962,10 @@ def bk_bubbles(doc, data=None, filters=None):
         to_plot = select_data()
         update_CDS()
 
-    # source_by_seg = dict()
-    # for seg in to_plot.seg3.unique():
-    #     source_by_seg[seg] = ColumnDataSource(
-    # to_plot.loc[to_plot.seg3 == seg])
-
     p = figure(plot_height=500, plot_width=800)
     p.yaxis.formatter = NumeralTickFormatter(format='0')
     p.xaxis.formatter = NumeralTickFormatter(format='0')
-    # https://docs.bokeh.org/en/latest/docs/reference/models/glyphs/multi_line.html
-    # lines = dict()
-    # for seg in to_plot.seg3.unique():
-    #     try:
-    #         color = colormaps['seg3'][seg]
-    #     except KeyError:
-    #         color = 'black'
-    #     lines[seg] = p.line(source=source_by_seg[seg],
-    #                         x=x,
-    #                         y=y,
-    #                         color=color,
-    #                         line_width=line_width,
-    #                         )
+
     seg_lines = p.multi_line(
         xs='xs',
         ys='ys',
@@ -1011,8 +1004,8 @@ def bk_bubbles(doc, data=None, filters=None):
 
     def update_plot():
         nonlocal p
-        p.x_range.start = -2000000
-        p.y_range.start = -2000000
+        p.x_range.start = 0
+        p.y_range.start = 0
         p.xaxis.axis_label = lib(select_x.value)
         p.yaxis.axis_label = lib(select_y.value)
         title = (
@@ -1034,3 +1027,49 @@ def bk_bubbles(doc, data=None, filters=None):
             p,
             )
         )
+
+
+def bk_detail(doc, data, client):
+    
+    p = figure(
+        x_axis_type="datetime",
+        title='Détail pour ' + client + " - " + ind_,
+        plot_height=500,
+        plot_width=800)
+    first_box = BoxAnnotation(
+        left=status_plot.index.get_level_values('date')[0],
+    #   bottom=0.,
+        right=status_plot.index.get_level_values('date')[1],
+        fill_color='blue',
+        fill_alpha=.2,
+        )
+    p.add_layout(first_box)
+    second_box = BoxAnnotation(
+        left=status_plot.index.get_level_values('date')[1],
+    #   bottom=0.,
+    #   right=status_plot.index.get_level_values(2)[1],
+        fill_color='green',
+        fill_alpha=.2,
+    )
+    p.add_layout(second_box)
+    p.ray(
+        x=datetime.timestamp(status_plot.index.get_level_values('date')[0]) * 1000,
+        y=(status_plot[ind_]).iloc[0],
+        angle=0.,
+        length=(datetime.timestamp(status_plot.index.get_level_values('date')[1]) - datetime.timestamp(status_plot.index.get_level_values('date')[0])) * 1000,
+        line_color='blue',
+        line_width=2,
+        )
+    p.ray(
+        x=datetime.timestamp(status_plot.index.get_level_values('date')[1]) * 1000,
+        y=(status_plot[ind_]).iloc[1],
+        angle=0.,
+        length=0,
+        line_color='green',
+        line_width=2,
+        )
+    p.circle(
+        to_plot.index.get_level_values('date'),
+        to_plot[ind_],
+        color=to_plot.color)
+    show(p)
