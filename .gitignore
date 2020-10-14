@@ -1,6 +1,8 @@
 # repo specific ignores
 data/*
 !data/.gitkeep
+persist/*
+!persist/.gitkeep
 
 # Byte-compiled / optimized / DLL files
 __pycache__/
