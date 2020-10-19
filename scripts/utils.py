@@ -12,7 +12,7 @@ from IPython.display import display
 from bokeh.plotting import figure
 from bokeh.models import ColumnDataSource, FactorRange, Range1d  # HoverTool,
 from bokeh.models.widgets import Select, DatePicker, CheckboxGroup
-# from bokeh.models.annotations import BoxAnnotation
+from bokeh.models.annotations import BoxAnnotation
 from bokeh.transform import factor_cmap
 from bokeh.layouts import row, column
 from bokeh.models.formatters import NumeralTickFormatter
@@ -1042,6 +1042,7 @@ def bk_bubbles(doc, data=None, filters=None):
 def bk_detail(doc,
               data=None,
               rolled=None,
+              status_updates=None,
               client=None,
               ):
     p_hist = figure(
@@ -1060,7 +1061,28 @@ def bk_detail(doc,
     p_dens.y_range = Range1d(-.1, 1.1)
     source = ColumnDataSource(data)
     roll_source = ColumnDataSource(rolled)
-
+    boxes = list()
+    cols = {
+        'no_web': 'green',
+        'inactive': 'grey',
+        'adopt': 'yellow',
+        'exploit': 'pink',
+        'exclusive': 'red',
+    }
+    for row_ in list(status_updates.itertuples()):
+        if not pd.isnull(row_.end_date):
+            end_date = row_.end_date
+        else:
+            end_date = None
+        boxes.append(
+            BoxAnnotation(
+                left=row_.date,
+                right=end_date,
+                fill_color=cols[row_.status]
+            )
+        )
+    for box in boxes:
+        p_dens.add_layout(box)
     # first_box = BoxAnnotation(
     #     left=status_plot.index.get_level_values('date')[0],
     # #   bottom=0.,
@@ -1182,5 +1204,34 @@ def compute_stat_from_percentage(
 
     bins are a named tuple with attributes label and bin limits
     '''
-    if mode == 'cut':
+    if mode != 'cut':
         raise NotImplementedError(f'mode :{mode} not yet implemented)')
+    return(
+        pd.cut(
+            ds,
+            bins=bins.bin_limits,
+            labels=bins.labels,
+            right=False,
+        )
+    )
+
+
+def mask_successive_values(
+    ds=None,
+    value=None,
+    count=None,
+    groupers=None,
+):
+    '''
+    Returns the initial series with consecutive values
+    '''
+    data = ds.rename('target').reset_index()
+    diffs = (
+        data[groupers + ['target']].shift() != data[groupers + ['target']]
+    )
+    diffs = diffs.any(axis=1).cumsum()
+    diffs = diffs.map(diffs.value_counts() >= count)
+    if value is not None:
+        diffs = (diffs & (data['target'] == value))
+    diffs.index = ds.index
+    return(diffs)
