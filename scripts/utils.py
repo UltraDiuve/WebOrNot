@@ -7,10 +7,13 @@ import matplotlib.colors as mcolor
 import seaborn as sns
 from pathlib import Path
 from functools import partial
+from collections import namedtuple
 from IPython.display import display
 from bokeh.plotting import figure
-from bokeh.models import ColumnDataSource, FactorRange  # HoverTool,
+from bokeh.models import ColumnDataSource, FactorRange, Range1d  # HoverTool,
 from bokeh.models.widgets import Select, DatePicker, CheckboxGroup
+# from bokeh.models.annotations import BoxAnnotation
+from bokeh.transform import factor_cmap
 from bokeh.layouts import row, column
 from bokeh.models.formatters import NumeralTickFormatter
 from datetime import date
@@ -88,6 +91,33 @@ formats = {
     'marginpercent_clt_zscore': '{:.3f}',
     'lineweight_clt_zscore': '{:.3f}',
 }
+
+colormaps = {
+    'seg1': {
+        'Z1': 'blue',
+        'Z2': 'red',
+        'Z3': 'green',
+        'Z4': 'orange',
+    },
+    'seg3': {
+        'ZI': mcolorpalette[4],
+        'ZJ': mcolorpalette[5],
+        'ZK': mcolorpalette[6],
+        'ZL': 'orange',
+    },
+    'origin2': {
+        'TV': mcolorpalette[0],
+        'VR': mcolorpalette[1],
+        'WEB': mcolorpalette[2],
+        'EDI': mcolorpalette[3],
+    }
+}
+
+labeled_bins = namedtuple('labeled_bins', ['labels', 'bin_limits'])
+def_bins = labeled_bins(
+    labels=['no_web', 'adopt', 'exploit', 'exclusive'],
+    bin_limits=[0., .2, .5, .9, 1.1],
+)
 
 # The lines below might require improvement (with __file__ or smth else)
 path = Path('..') / 'data' / 'libelles_segments.csv'
@@ -667,7 +697,7 @@ def bk_histo_seg(doc,
 
 def bk_bubbles(doc, data=None, filters=None):
     max_size = 50
-    line_width = 2.5
+    # line_width = 2.5
     plot_indicators = ['brutrevenue', 'margin', 'weight', 'linecount']
     select_indicators = [
         'brutrevenue',
@@ -680,26 +710,6 @@ def bk_bubbles(doc, data=None, filters=None):
         'lineweight',
     ]
     plot_analysis_axes = ['seg3', 'origin2']
-    colormaps = {
-        'seg1': {
-            'Z1': 'blue',
-            'Z2': 'red',
-            'Z3': 'green',
-            'Z4': 'orange',
-        },
-        'seg3': {
-            'ZI': mcolorpalette[4],
-            'ZJ': mcolorpalette[5],
-            'ZK': mcolorpalette[6],
-            'ZL': 'orange',
-        },
-        'origin2': {
-            'TV': mcolorpalette[0],
-            'VR': mcolorpalette[1],
-            'WEB': mcolorpalette[2],
-            'EDI': mcolorpalette[3],
-        }
-    }
     hover_fields = [
         'margin',
         'brutrevenue',
@@ -966,7 +976,7 @@ def bk_bubbles(doc, data=None, filters=None):
     p.yaxis.formatter = NumeralTickFormatter(format='0')
     p.xaxis.formatter = NumeralTickFormatter(format='0')
 
-    seg_lines = p.multi_line(
+    p.multi_line(
         xs='xs',
         ys='ys',
         line_color='color',
@@ -974,7 +984,7 @@ def bk_bubbles(doc, data=None, filters=None):
         source=line_CDS,
         legend_field='line_lib',
         )
-    circles = p.circle(
+    p.circle(
         source=source,
         x='x',
         y='y',
@@ -1029,47 +1039,148 @@ def bk_bubbles(doc, data=None, filters=None):
         )
 
 
-def bk_detail(doc, data, client):
-    
-    p = figure(
+def bk_detail(doc,
+              data=None,
+              rolled=None,
+              client=None,
+              ):
+    p_hist = figure(
         x_axis_type="datetime",
-        title='Détail pour ' + client + " - " + ind_,
+        title='Détail pour ' + client,
         plot_height=500,
-        plot_width=800)
-    first_box = BoxAnnotation(
-        left=status_plot.index.get_level_values('date')[0],
-    #   bottom=0.,
-        right=status_plot.index.get_level_values('date')[1],
-        fill_color='blue',
-        fill_alpha=.2,
+        plot_width=800,
         )
-    p.add_layout(first_box)
-    second_box = BoxAnnotation(
-        left=status_plot.index.get_level_values('date')[1],
-    #   bottom=0.,
-    #   right=status_plot.index.get_level_values(2)[1],
-        fill_color='green',
-        fill_alpha=.2,
+    p_dens = figure(
+        x_range=p_hist.x_range,
+        x_axis_type="datetime",
+        plot_width=p_hist.plot_width,
+        plot_height=400,
     )
-    p.add_layout(second_box)
-    p.ray(
-        x=datetime.timestamp(status_plot.index.get_level_values('date')[0]) * 1000,
-        y=(status_plot[ind_]).iloc[0],
-        angle=0.,
-        length=(datetime.timestamp(status_plot.index.get_level_values('date')[1]) - datetime.timestamp(status_plot.index.get_level_values('date')[0])) * 1000,
-        line_color='blue',
-        line_width=2,
+    p_dens.yaxis.formatter = NumeralTickFormatter(format='0 %')
+    p_dens.y_range = Range1d(-.1, 1.1)
+    source = ColumnDataSource(data)
+    roll_source = ColumnDataSource(rolled)
+
+    # first_box = BoxAnnotation(
+    #     left=status_plot.index.get_level_values('date')[0],
+    # #   bottom=0.,
+    #     right=status_plot.index.get_level_values('date')[1],
+    #     fill_color='blue',
+    #     fill_alpha=.2,
+    #     )
+    # p.add_layout(first_box)
+    # second_box = BoxAnnotation(
+    #     left=status_plot.index.get_level_values('date')[1],
+    # #   bottom=0.,
+    # #   right=status_plot.index.get_level_values(2)[1],
+    #     fill_color='green',
+    #     fill_alpha=.2,
+    # )
+    # p.add_layout(second_box)
+    # p.ray(
+    #     x=datetime.timestamp(status_plot.index.get_level_values('date')[0])
+    #       * 1000,
+    #     y=(status_plot[ind_]).iloc[0],
+    #     angle=0.,
+    #     length=(
+    #       datetime.timestamp(status_plot.index.get_level_values('date')[1]) -
+    #       datetime.timestamp(status_plot.index.get_level_values('date')[0]))
+    #       * 1000,
+    #     line_color='blue',
+    #     line_width=2,
+    #     )
+    # p.ray(
+    #     x=datetime.timestamp(status_plot.index.get_level_values('date')[1])
+    #       * 1000,
+    #     y=(status_plot[ind_]).iloc[1],
+    #     angle=0.,
+    #     length=0,
+    #     line_color='green',
+    #     line_width=2,
+    #     )
+    p_hist.line(
+        x='date',
+        y='brutrevenue',
+        line_width=.2,
+        line_color='black',
+        source=source,
+    )
+    p_hist.circle(
+        x='date',
+        y='brutrevenue',
+        color=factor_cmap(
+            'origin2',
+            list(colormaps['origin2'].values()),
+            list(colormaps['origin2'])),
+        source=source,
+        size=5.,
         )
-    p.ray(
-        x=datetime.timestamp(status_plot.index.get_level_values('date')[1]) * 1000,
-        y=(status_plot[ind_]).iloc[1],
-        angle=0.,
-        length=0,
-        line_color='green',
-        line_width=2,
+    p_dens.line(
+        x='date',
+        y='percentage',
+        source=roll_source,
+        line_width=1.,
+        color=colormaps['origin2']['WEB'],
         )
-    p.circle(
-        to_plot.index.get_level_values('date'),
-        to_plot[ind_],
-        color=to_plot.color)
-    show(p)
+    doc.add_root(column(p_hist, p_dens))
+
+
+def compute_rolling_percentage(
+    data=None,
+    window=None,
+    win_type=None,
+    indicator=None,
+    axis=None,
+    roll_kwargs=None,
+    groupers=None,
+):
+    '''
+    data is a dataframe, with multiindex on columns.
+    Level 0 must be the indicator, Level 1 the axis on which to compute the
+    percentage.
+    returns a series, indexed like the rows of data, which is the "rolling
+    percentage" of the axis.
+    '''
+    if indicator not in data.columns.get_level_values(0):
+        raise RuntimeError(f"Indicator '{indicator}' not in first level of "
+                           f"columns index.")
+
+    if axis not in data.columns.get_level_values(1):
+        raise RuntimeError(f"Axis '{axis}' not in second level of "
+                           f"columns index.")
+
+    if (indicator, 'total') not in data.columns:
+        df = data.loc[:, indicator].copy()
+        df['total'] = df.sum(axis=1)
+        df = df[[axis, 'total']]
+    else:
+        df = data.loc[:, idx[indicator, [axis, 'total']]].copy()
+        df.columns = df.columns.droplevel(level=0)
+
+    if roll_kwargs is None:
+        roll_kwargs = dict()
+
+    df = df.groupby(groupers).apply(
+        lambda x: x.rolling(
+            window,
+            win_type=win_type,
+            min_periods=1,
+            **roll_kwargs,
+            ).sum()
+    )
+
+    return((df[axis] / df['total']).fillna(0))
+
+
+def compute_stat_from_percentage(
+    ds=None,
+    mode='cut',
+    bins=def_bins,
+):
+    '''
+    Returns a series with bins from an input series
+
+    bins are a named tuple with attributes label and bin limits
+    '''
+    if mode == 'cut':
+        raise NotImplementedError(f'mode :{mode} not yet implemented)')
