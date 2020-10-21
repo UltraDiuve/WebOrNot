@@ -17,6 +17,8 @@ from bokeh.transform import factor_cmap
 from bokeh.layouts import row, column
 from bokeh.models.formatters import NumeralTickFormatter
 from datetime import date
+from datetime import datetime
+now = datetime.now
 
 
 mcolorpalette = list(mcolor.TABLEAU_COLORS.values())
@@ -1251,3 +1253,121 @@ def get_first_rupture_from_group(
             (same_group & ~same_target)
         ]
     )
+
+
+def day_orders_pipe(
+    data=None,
+    inactive_duration=None,
+    indicator_status=None,
+    origin=None,
+    indicator_perf=None,
+    groupers=['orgacom', 'client'],
+    roll_parms=None,
+    inactive_roll_mode='stitch',
+    bins=def_bins,
+):
+    '''
+    Whole pipeline to treat day_orders formatted dataframe for plotting
+
+    day_order format is:
+    - dataframe
+    - row indexed by: groupers (orgacom & client) and date
+    - with dense dates (i.e. all business days are in the df)
+    - column indexed by:
+      - lev0: 'indicators' the indicators for each row
+      - lev1: 'origin2' the canal of origin
+    Not a constraint, but with my way of computing, usually each row will have
+    a single indicator populated.
+    Optionnaly, the column origin2 may have a 'total' precomputed.
+    '''
+    # Step 1: compute total if not in dataframe columns
+    indicators = list(set([indicator_status, indicator_perf]))
+    try:
+        df = data.loc[:, indicators].copy()
+    except KeyError:
+        raise RuntimeError(f"Indicator '{indicators}' has not been "
+                           f"found in first level of dataframe column "
+                           f"multiindex.")
+    if (
+        (indicator_status, 'total') not in data.columns or
+        (indicator_perf, 'total') not in data.columns
+            ):
+        start = now()
+        print(f'{start}: Computing totals')
+        df = df.join(
+            pd.concat(
+                [df[indicators].groupby('indicators', axis=1).sum()],
+                keys=['total'],
+                axis=1
+                ).swaplevel(axis=1)
+        )
+        df = df.sort_index(axis=1)
+        print(f'{now()}: Done! Elapsed: {now() - start}')
+
+    # Step 2: compute inactive periods
+    if 'inactive' not in df.columns:
+        start = now()
+        print(f'{start}: Computing inactive periods')
+        df['inactive'] = mask_successive_values(
+            ds=df[(indicator_status, 'total')],
+            groupers=groupers,
+            count=inactive_duration,
+            value=0.,
+        )
+        print(f'{now()}: Done! Elapsed: {now() - start}')
+
+    # Step 3: compute rolling indicators
+    if roll_parms is None:
+        roll_parms = dict(
+            center=False,
+            win_type='triang',
+            window=100,
+            min_periods=15,
+        )
+    if inactive_roll_mode not in {'stitch', 'ignore', 'zero'}:
+        raise ValueError(
+            f"inactive_roll_mode must be 'stitch', 'ignore' or 'zero'. Got "
+            f"{inactive_roll_mode} instead."
+            )
+    if indicator_status == indicator_perf:
+        cols = [
+            (indicator_status, origin),
+            (indicator_status, 'total'),
+            ]
+    else:
+        cols = [
+            (indicator_status, origin),
+            (indicator_status, 'total'),
+            (indicator_perf, 'total'),
+            ]
+    if inactive_roll_mode == 'stitch':
+        scope = df.loc[~df.inactive, [*cols, ('inactive', '')]]
+    else:
+        scope = df.loc[:, [*cols, ('inactive', '')]]
+    mask_value = 0. if inactive_roll_mode == 'zero' else np.nan
+    rolled = (
+        scope
+        .where(~scope.inactive, mask_value)
+        .loc[:, cols]
+        .groupby(groupers, observed=True)
+        .apply(
+            lambda x: x.rolling(**roll_parms).mean()
+            )
+    )
+    if inactive_roll_mode == 'stitch':
+        rolled = rolled.reindex(df.index, method='ffill')
+    df = df.join(rolled, rsuffix='_rolled')
+    del(rolled)
+
+    # Step 4: compute statuses
+    df[origin + '_percentage'] = (
+        df.loc[:, (indicator_status + '_rolled', origin)] /
+        df.loc[:, (indicator_status + '_rolled', 'total')]
+    )
+    df['status'] = compute_stat_from_percentage(
+        ds=df[origin + '_percentage'],
+        mode='cut',
+        bins=bins,
+    ).fillna(method='ffill').astype('str').where(~df.inactive, 'inactive')
+
+    return(df)
