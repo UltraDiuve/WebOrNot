@@ -10,7 +10,7 @@ from functools import partial
 from collections import namedtuple
 from IPython.display import display
 from bokeh.plotting import figure
-from bokeh.models import ColumnDataSource, FactorRange, Range1d  # HoverTool,
+from bokeh.models import ColumnDataSource, FactorRange, Range1d, Span
 from bokeh.models.widgets import Select, DatePicker, CheckboxGroup
 from bokeh.models.annotations import BoxAnnotation
 from bokeh.transform import factor_cmap
@@ -116,7 +116,7 @@ colormaps = {
 labeled_bins = namedtuple('labeled_bins', ['labels', 'bin_limits'])
 def_bins = labeled_bins(
     labels=['no_web', 'adopt', 'exploit', 'exclusive'],
-    bin_limits=[0., .2, .5, .9, 1.1],
+    bin_limits=[0., .2, .5, .9, 1.001],
 )
 
 # The lines below might require improvement (with __file__ or smth else)
@@ -1043,7 +1043,9 @@ def bk_detail(doc,
               data=None,
               rolled=None,
               status_updates=None,
+              roll_perf=None,
               client=None,
+              bins=def_bins,
               ):
     p_hist = figure(
         x_axis_type="datetime",
@@ -1057,14 +1059,22 @@ def bk_detail(doc,
         plot_width=p_hist.plot_width,
         plot_height=400,
     )
+    p_perf = figure(
+        x_range=p_hist.x_range,
+        x_axis_type="datetime",
+        plot_width=p_hist.plot_width,
+        plot_height=400,
+    )
     p_dens.yaxis.formatter = NumeralTickFormatter(format='0 %')
     p_dens.y_range = Range1d(-.1, 1.1)
+    p_perf.y_range.start = 0
     source = ColumnDataSource(data)
     roll_source = ColumnDataSource(rolled)
+    roll_perf_source = ColumnDataSource(roll_perf)
     boxes = list()
     cols = {
         'no_web': 'green',
-        'inactive': 'grey',
+        'inactive': 'black',
         'adopt': 'yellow',
         'exploit': 'pink',
         'exclusive': 'red',
@@ -1078,48 +1088,22 @@ def bk_detail(doc,
             BoxAnnotation(
                 left=row_.date,
                 right=end_date,
-                fill_color=cols[row_.status]
+                fill_color=cols[row_.status],
+                fill_alpha=.1,
             )
         )
     for box in boxes:
         p_dens.add_layout(box)
-    # first_box = BoxAnnotation(
-    #     left=status_plot.index.get_level_values('date')[0],
-    # #   bottom=0.,
-    #     right=status_plot.index.get_level_values('date')[1],
-    #     fill_color='blue',
-    #     fill_alpha=.2,
-    #     )
-    # p.add_layout(first_box)
-    # second_box = BoxAnnotation(
-    #     left=status_plot.index.get_level_values('date')[1],
-    # #   bottom=0.,
-    # #   right=status_plot.index.get_level_values(2)[1],
-    #     fill_color='green',
-    #     fill_alpha=.2,
-    # )
-    # p.add_layout(second_box)
-    # p.ray(
-    #     x=datetime.timestamp(status_plot.index.get_level_values('date')[0])
-    #       * 1000,
-    #     y=(status_plot[ind_]).iloc[0],
-    #     angle=0.,
-    #     length=(
-    #       datetime.timestamp(status_plot.index.get_level_values('date')[1]) -
-    #       datetime.timestamp(status_plot.index.get_level_values('date')[0]))
-    #       * 1000,
-    #     line_color='blue',
-    #     line_width=2,
-    #     )
-    # p.ray(
-    #     x=datetime.timestamp(status_plot.index.get_level_values('date')[1])
-    #       * 1000,
-    #     y=(status_plot[ind_]).iloc[1],
-    #     angle=0.,
-    #     length=0,
-    #     line_color='green',
-    #     line_width=2,
-    #     )
+        p_hist.add_layout(box)
+        p_perf.add_layout(box)
+    for val in bins.bin_limits:
+        p_dens.add_layout(Span(
+            location=val,
+            dimension='width',
+            line_dash='dashed',
+            line_color='red',
+            line_alpha=.5,
+            ))
     p_hist.line(
         x='date',
         y='brutrevenue',
@@ -1144,7 +1128,12 @@ def bk_detail(doc,
         line_width=1.,
         color=colormaps['origin2']['WEB'],
         )
-    doc.add_root(column(p_hist, p_dens))
+    p_perf.line(
+        x='date',
+        y='margin',
+        source=roll_perf_source,
+    )
+    doc.add_root(column(p_hist, p_dens, p_perf))
 
 
 def compute_rolling_percentage(
@@ -1235,3 +1224,30 @@ def mask_successive_values(
         diffs = (diffs & (data['target'] == value))
     diffs.index = ds.index
     return(diffs)
+
+
+def get_first_rupture_from_group(
+    df=None,
+    groupers=None,
+    order_keys=None,
+    targets=None,
+):
+    '''
+    Return first rupture from a dataframe, among groups
+
+    df is a dataframe
+    other parameters are lists of fields, from columns.
+    Those fields must not be part of the index, use reset_index prior to
+    calling this function
+    Any rupture on a target field is considered a rupture (i.e. if only a
+    single field from target is different it will appear as rupture)
+    '''
+    df = df.sort_values(groupers + order_keys)
+    same_group = (df[groupers] == df[groupers].shift()).all(axis=1)
+    same_target = (df[targets] == df[targets].shift()).all(axis=1)
+    return(
+        df.loc[
+            ~same_group |
+            (same_group & ~same_target)
+        ]
+    )
