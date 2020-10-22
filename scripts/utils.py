@@ -1041,17 +1041,33 @@ def bk_bubbles(doc, data=None, filters=None):
         )
 
 
-def bk_detail(doc,
-              data=None,
-              rolled=None,
-              status_updates=None,
-              roll_perf=None,
-              client=None,
-              bins=def_bins,
-              ):
+def bk_detail(
+    doc,
+    data=None,
+    order_data=None,
+    oc=None,
+    client=None,
+    bins=def_bins,
+    groupers=['orgacom', 'client'],
+    inactive_duration=20,
+    indicator_status='brutrevenue',
+    origin='WEB',
+    indicator_perf='margin',
+    roll_parms=dict(
+        window=75,
+        center=True,
+        win_type='triang',
+        min_periods=1,
+    ),
+    inactive_roll_mode='stitch',
+):
+    if groupers is None:
+        groupers = ['orgacom', 'client']
+
+    # layout definitions
     p_hist = figure(
         x_axis_type="datetime",
-        title='Détail pour ' + client,
+        title='Détail pour ' + oc + ' / ' + client,
         plot_height=500,
         plot_width=800,
         )
@@ -1059,20 +1075,45 @@ def bk_detail(doc,
         x_range=p_hist.x_range,
         x_axis_type="datetime",
         plot_width=p_hist.plot_width,
-        plot_height=400,
+        plot_height=300,
     )
     p_perf = figure(
         x_range=p_hist.x_range,
         x_axis_type="datetime",
         plot_width=p_hist.plot_width,
-        plot_height=400,
+        plot_height=300,
+    )
+    data = day_orders_pipe(
+        data=data,
+        inactive_duration=inactive_duration,
+        indicator_status=indicator_status,
+        origin=origin,
+        indicator_perf=indicator_perf,
+        groupers=groupers,
+        roll_parms=roll_parms,
+        inactive_roll_mode=inactive_roll_mode,
+        bins=bins,
     )
     p_dens.yaxis.formatter = NumeralTickFormatter(format='0 %')
     p_dens.y_range = Range1d(-.1, 1.1)
     p_perf.y_range.start = 0
-    source = ColumnDataSource(data)
-    roll_source = ColumnDataSource(rolled)
-    roll_perf_source = ColumnDataSource(roll_perf)
+    source = ColumnDataSource(data.reset_index())
+    hist_source = ColumnDataSource(order_data.reset_index())
+    status_updates = get_first_rupture_from_group(
+        df=(
+            data
+            .reset_index()
+            .loc[:, groupers + ['date', 'status']]
+            .droplevel(1, axis=1)
+        ),
+        groupers=groupers,
+        order_keys=['date'],
+        targets=['status'],
+    )
+    status_updates = compute_end_date(
+        data=status_updates,
+        groupers=groupers,
+        )
     boxes = list()
     cols = {
         'no_web': 'green',
@@ -1111,7 +1152,7 @@ def bk_detail(doc,
         y='brutrevenue',
         line_width=.2,
         line_color='black',
-        source=source,
+        source=hist_source,
     )
     p_hist.circle(
         x='date',
@@ -1120,22 +1161,40 @@ def bk_detail(doc,
             'origin2',
             list(colormaps['origin2'].values()),
             list(colormaps['origin2'])),
-        source=source,
+        source=hist_source,
         size=5.,
         )
     p_dens.line(
-        x='date',
-        y='percentage',
-        source=roll_source,
+        x='date_',
+        y='WEB_percentage_',
+        source=source,
         line_width=1.,
         color=colormaps['origin2']['WEB'],
         )
     p_perf.line(
-        x='date',
-        y='margin',
-        source=roll_perf_source,
+        x='date_',
+        y='margin_rolled_total',
+        source=source,
     )
     doc.add_root(column(p_hist, p_dens, p_perf))
+
+
+def compute_end_date(
+    data=None,
+    groupers=None,
+    begin_field='date',
+    end_field_name='end_date',
+):
+    same_grp = (data[groupers].shift(-1) == data[groupers]).all(axis=1)
+    end_dates = (
+        data[begin_field]
+        .shift(-1)
+        .where(same_grp, None)
+        .rename('end_date')
+        .to_frame()
+    )
+    # end_dates.columns = pd.MultiIndex.from_product([['end_date'], ['']])
+    return(data.join(end_dates))
 
 
 def compute_rolling_percentage(
@@ -1317,6 +1376,8 @@ def day_orders_pipe(
         print(f'{now()}: Done! Elapsed: {now() - start}')
 
     # Step 3: compute rolling indicators
+    start = now()
+    print(f'{start}: Computing rolling indicators')
     if roll_parms is None:
         roll_parms = dict(
             center=False,
@@ -1358,8 +1419,11 @@ def day_orders_pipe(
         rolled = rolled.reindex(df.index, method='ffill')
     df = df.join(rolled, rsuffix='_rolled')
     del(rolled)
+    print(f'{now()}: Done! Elapsed: {now() - start}')
 
     # Step 4: compute statuses
+    start = now()
+    print(f'{start}: Computing percentage and statuses')
     df[origin + '_percentage'] = (
         df.loc[:, (indicator_status + '_rolled', origin)] /
         df.loc[:, (indicator_status + '_rolled', 'total')]
@@ -1369,5 +1433,6 @@ def day_orders_pipe(
         mode='cut',
         bins=bins,
     ).fillna(method='ffill').astype('str').where(~df.inactive, 'inactive')
+    print(f'{now()}: Done! Elapsed: {now() - start}')
 
     return(df)
