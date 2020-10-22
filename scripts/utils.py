@@ -10,7 +10,8 @@ from functools import partial
 from collections import namedtuple
 from IPython.display import display
 from bokeh.plotting import figure
-from bokeh.models import ColumnDataSource, FactorRange, Range1d, Span
+from bokeh.models import ColumnDataSource, FactorRange, Range1d, Span, Button
+from bokeh.models import TextInput
 from bokeh.models.widgets import Select, DatePicker, CheckboxGroup
 from bokeh.models.annotations import BoxAnnotation
 from bokeh.transform import factor_cmap
@@ -120,6 +121,13 @@ def_bins = labeled_bins(
     labels=['no_web', 'adopt', 'exploit', 'exclusive'],
     bin_limits=[0., .2, .5, .9, 1.001],
 )
+bin_colors = {
+    'no_web': 'green',
+    'inactive': 'black',
+    'adopt': 'yellow',
+    'exploit': 'pink',
+    'exclusive': 'red',
+}
 
 # The lines below might require improvement (with __file__ or smth else)
 path = Path('..') / 'data' / 'libelles_segments.csv'
@@ -1043,7 +1051,7 @@ def bk_bubbles(doc, data=None, filters=None):
 
 def bk_detail(
     doc,
-    data=None,
+    in_data=None,
     order_data=None,
     oc=None,
     client=None,
@@ -1053,92 +1061,125 @@ def bk_detail(
     indicator_status='brutrevenue',
     origin='WEB',
     indicator_perf='margin',
-    roll_parms=dict(
-        window=75,
-        center=True,
-        win_type='triang',
-        min_periods=1,
-    ),
+    bin_colors=bin_colors,
     inactive_roll_mode='stitch',
 ):
     if groupers is None:
         groupers = ['orgacom', 'client']
+    roll_parms = dict(
+        window=20,
+        center=True,
+        win_type='triang',
+        min_periods=1,
+    )
 
-    # layout definitions
+    source = ColumnDataSource()
+    hist_source = ColumnDataSource()
+    data = pd.DataFrame()
+    status_updates = pd.DataFrame()
+    boxes = list()
+
+    def update_CDS():
+        nonlocal boxes
+        for box in boxes:
+            box.visible = False
+        boxes = list()
+        for row_ in list(status_updates.itertuples()):
+            if not pd.isnull(row_.end_date):
+                end_date = row_.end_date
+            else:
+                end_date = None
+            boxes.append(
+                BoxAnnotation(
+                    left=row_.date,
+                    right=end_date,
+                    fill_color=bin_colors[row_.status],
+                    # fill_alpha=1.,
+                )
+            )
+        for box in boxes:
+            p_dens.add_layout(box)
+            p_hist.add_layout(box)
+            p_perf.add_layout(box)
+        source.data = ColumnDataSource.from_df(data.reset_index())
+        hist_source.data = ColumnDataSource.from_df(order_data.reset_index())
+
+    def update_dataframe():
+        nonlocal data
+        nonlocal status_updates
+        data = day_orders_pipe(
+            data=in_data,
+            inactive_duration=inactive_duration,
+            indicator_status=indicator_status,
+            origin=origin,
+            indicator_perf=indicator_perf,
+            groupers=groupers,
+            roll_parms=roll_parms,
+            inactive_roll_mode=inactive_roll_mode,
+            bins=bins,
+        )
+        status_updates = get_first_rupture_from_group(
+            df=(
+                data
+                .reset_index()
+                .loc[:, groupers + ['date', 'status']]
+                .droplevel(1, axis=1)
+            ),
+            groupers=groupers,
+            order_keys=['date'],
+            targets=['status'],
+        )
+        status_updates = compute_end_date(
+            data=status_updates,
+            groupers=groupers,
+            )
+        update_CDS()
+
+    def acquire_input():
+        nonlocal inactive_duration
+        inactive_duration = int(inactive_duration_input.value)
+        roll_parms['window'] = int(window_input.value)
+        update_dataframe()
+
+    # widgets definition
+    inactive_duration_input = TextInput(
+        value=str(inactive_duration),
+        title="Durée pour inactivité :",
+    )
+    window_input = TextInput(
+        value=str(roll_parms['window']),
+        title="Fenêtre de moyenne glissante :",
+    )
+    button = Button(label="Go !", button_type="primary", width=20)
+    button.on_click(acquire_input)
+    widgets = row(inactive_duration_input, window_input, button)
+    # figures definitions
+
     p_hist = figure(
         x_axis_type="datetime",
         title='Détail pour ' + oc + ' / ' + client,
-        plot_height=500,
+        plot_height=280,
         plot_width=800,
         )
     p_dens = figure(
         x_range=p_hist.x_range,
         x_axis_type="datetime",
         plot_width=p_hist.plot_width,
-        plot_height=300,
+        plot_height=280,
     )
+    p_dens.yaxis.formatter = NumeralTickFormatter(format='0 %')
+    p_dens.y_range = Range1d(-.1, 1.1)
     p_perf = figure(
         x_range=p_hist.x_range,
         x_axis_type="datetime",
         plot_width=p_hist.plot_width,
-        plot_height=300,
+        plot_height=280,
     )
-    data = day_orders_pipe(
-        data=data,
-        inactive_duration=inactive_duration,
-        indicator_status=indicator_status,
-        origin=origin,
-        indicator_perf=indicator_perf,
-        groupers=groupers,
-        roll_parms=roll_parms,
-        inactive_roll_mode=inactive_roll_mode,
-        bins=bins,
-    )
-    p_dens.yaxis.formatter = NumeralTickFormatter(format='0 %')
-    p_dens.y_range = Range1d(-.1, 1.1)
     p_perf.y_range.start = 0
-    source = ColumnDataSource(data.reset_index())
-    hist_source = ColumnDataSource(order_data.reset_index())
-    status_updates = get_first_rupture_from_group(
-        df=(
-            data
-            .reset_index()
-            .loc[:, groupers + ['date', 'status']]
-            .droplevel(1, axis=1)
-        ),
-        groupers=groupers,
-        order_keys=['date'],
-        targets=['status'],
-    )
-    status_updates = compute_end_date(
-        data=status_updates,
-        groupers=groupers,
-        )
-    boxes = list()
-    cols = {
-        'no_web': 'green',
-        'inactive': 'black',
-        'adopt': 'yellow',
-        'exploit': 'pink',
-        'exclusive': 'red',
-    }
-    for row_ in list(status_updates.itertuples()):
-        if not pd.isnull(row_.end_date):
-            end_date = row_.end_date
-        else:
-            end_date = None
-        boxes.append(
-            BoxAnnotation(
-                left=row_.date,
-                right=end_date,
-                fill_color=cols[row_.status],
-                fill_alpha=.1,
-            )
-        )
-    for box in boxes:
-        p_dens.add_layout(box)
-        p_hist.add_layout(box)
-        p_perf.add_layout(box)
+
+    acquire_input()
+
+    # glyphs definitions
     for val in bins.bin_limits:
         p_dens.add_layout(Span(
             location=val,
@@ -1176,7 +1217,8 @@ def bk_detail(
         y='margin_rolled_total',
         source=source,
     )
-    doc.add_root(column(p_hist, p_dens, p_perf))
+
+    doc.add_root(column(widgets, p_hist, p_dens, p_perf))
 
 
 def compute_end_date(
