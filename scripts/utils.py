@@ -11,12 +11,14 @@ from collections import namedtuple
 from IPython.display import display
 from bokeh.plotting import figure
 from bokeh.models import ColumnDataSource, FactorRange, Range1d, Span, Button
-from bokeh.models import TextInput
+from bokeh.models import TextInput, Div
 from bokeh.models.widgets import Select, DatePicker, CheckboxGroup
 from bokeh.models.annotations import BoxAnnotation
 from bokeh.transform import factor_cmap
 from bokeh.layouts import row, column
 from bokeh.models.formatters import NumeralTickFormatter
+from bokeh.models.tickers import MonthsTicker
+from math import pi
 from datetime import date
 from datetime import datetime
 now = datetime.now
@@ -1063,6 +1065,7 @@ def bk_detail(
     indicator_perf='margin',
     bin_colors=bin_colors,
     inactive_roll_mode='stitch',
+    clt_data=None,
 ):
     if groupers is None:
         groupers = ['orgacom', 'client']
@@ -1141,6 +1144,18 @@ def bk_detail(
         roll_parms['window'] = int(window_input.value)
         update_dataframe()
 
+    # client information widget
+    dates = order_data.index.get_level_values(2)
+    delta = (dates.max() - dates.min()).days
+    month_rev = order_data.brutrevenue.sum() * 30 / delta
+    week_freq = len(order_data) * 7 / delta
+    client_info = Div(
+        text=create_client_info(clt_data=clt_data, other_data={
+            'month_revenue': f'{month_rev:.2f} €/mois',
+            'week_freq': f'{week_freq:.2f} com./sem.',
+        }),
+    )
+
     # widgets definition
     inactive_duration_input = TextInput(
         value=str(inactive_duration),
@@ -1152,20 +1167,26 @@ def bk_detail(
     )
     button = Button(label="Go !", button_type="primary", width=20)
     button.on_click(acquire_input)
-    widgets = row(inactive_duration_input, window_input, button)
-    # figures definitions
+    widgets = column(inactive_duration_input, window_input, button)
 
+    # figures definitions
+    TOOLS = "pan,wheel_zoom,box_zoom,reset,box_select,lasso_select"
     p_hist = figure(
         x_axis_type="datetime",
         title='Détail pour ' + oc + ' / ' + client,
         plot_height=280,
-        plot_width=800,
+        plot_width=600,
+        toolbar_location=None,
         )
+    p_hist.y_range.start = 0
+    p_hist.xaxis.ticker = MonthsTicker(months=list(range(1, 13)))
+    p_hist.xaxis.major_label_orientation = pi / 2
     p_dens = figure(
         x_range=p_hist.x_range,
         x_axis_type="datetime",
         plot_width=p_hist.plot_width,
         plot_height=280,
+        toolbar_location=None,
     )
     p_dens.yaxis.formatter = NumeralTickFormatter(format='0 %')
     p_dens.y_range = Range1d(-.1, 1.1)
@@ -1174,8 +1195,19 @@ def bk_detail(
         x_axis_type="datetime",
         plot_width=p_hist.plot_width,
         plot_height=280,
+        toolbar_location=None,
     )
     p_perf.y_range.start = 0
+    for plot in [p_hist, p_dens, p_perf]:
+        plot.xaxis.ticker = MonthsTicker(months=list(range(1, 13)))
+        plot.xaxis.major_label_orientation = pi / 2
+    p_compare = figure(
+        plot_width=500,
+        plot_height=500,
+        x_range=[-.05, 1.05],
+        tools=TOOLS,
+    )
+    p_compare.xaxis.formatter = NumeralTickFormatter(format='0 %')
 
     acquire_input()
 
@@ -1217,8 +1249,87 @@ def bk_detail(
         y='margin_rolled_total',
         source=source,
     )
+    p_compare.circle(
+        source=source,
+        x='WEB_percentage_',
+        y='margin_rolled_total',
+        color='black',
+        fill_alpha=.5,
+        line_alpha=.5,
+    )
 
-    doc.add_root(column(widgets, p_hist, p_dens, p_perf))
+    doc.add_root(
+        row(
+            column(client_info, widgets),
+            column(p_hist, p_dens, p_perf),
+            column(p_compare),
+            )
+    )
+
+
+def create_client_info(
+    clt_data=None,
+    other_data=None,
+):
+    html = "<h1>Informations client</h1>"
+    html += "<h2>Généralités</h2>"
+    html += "<ul>"
+    html += f"<li><b>Code</b> : </b>{clt_data.name[1]}</li>"
+    data_to_show = {
+        'nom': 'Libellé client',
+        'postalcode': 'Code postal',
+    }
+    for code, lib in data_to_show.items():
+        try:
+            html += f"<li><b>{lib} : </b> {clt_data[code]}</li>"
+        except KeyError:
+            pass
+    html += "</ul>"
+    html += "<h2>Segmentation</h2>"
+    html += "<ul>"
+    data_to_show = {
+        'seg1_lib': 'Segment 1',
+        'seg2_lib': 'Segment 2',
+        'seg3_lib': 'Segment 3',
+        'seg4_lib': 'Segment 4',
+        'cat_lib': 'Catégorie',
+        'sscat_lib': 'Sous-catégorie',
+    }
+    for code, lib in data_to_show.items():
+        try:
+            html += f"<li><b>{lib} : </b> {clt_data[code]}</li>"
+        except KeyError:
+            pass
+    html += "</ul>"
+    html += "<h2>Hiérarchie</h2>"
+    html += "<ul>"
+    data_to_show = {
+        'hier4': 'Hiérarchie 4',
+        'hier3': 'Hiérarchie 3',
+        'hier2': 'Hiérarchie 2',
+        'hier1': 'Hiérarchie 1',
+    }
+    for code, lib in data_to_show.items():
+        html += (
+            f"<li><b>{lib} : </b> {clt_data[code]} - "
+            f"{clt_data[code + '_lib']}</li>"
+        )
+    html += "</ul>"
+    html += "<h2>Informations quantitatives</h2>"
+    html += "<ul>"
+    data_to_show = {
+        'month_revenue': 'CA brut / mois',
+        'week_freq': "Commandes / semaine",
+    }
+    for code, lib in data_to_show.items():
+        try:
+            html += (
+                f"<li><b>{lib} : </b> {other_data[code]}"
+            )
+        except KeyError:
+            pass
+    html += "</ul>"
+    return(html)
 
 
 def compute_end_date(
