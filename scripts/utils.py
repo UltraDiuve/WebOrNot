@@ -50,6 +50,10 @@ libs = {
     'size': 'Nb commandes',
     'origin': 'Canal de commande',
     'origin2': 'Canal de commande',
+    'brutrevenue_glob': 'CA brut total (€)',
+    'margin_glob': 'Marge totale (€)',
+    'weight_glob': 'Tonnage total (kg)',
+    'linecount_glob': 'Nombre de lignes total',
     'origin2_lib': 'Canal de commande',
     'margin_clt_zscore': 'Marge (€) - z-score',
     'brutrevenue_clt_zscore': 'CA brut (€) - z-score',
@@ -63,6 +67,8 @@ libs = {
     'VR': 'Vente route',
     'WEB': 'e-commerce',
     'EDI': 'EDI',
+    'PPF': 'PassionFroid',
+    'PES': 'EpiSaveurs',
     '2BRE': '2BRE - Episaveurs Bretagne',
     '1ALO': '1ALO - PassionFroid Est',
     '1LRO': '1LRO - PassionFroid Languedoc-Roussillon',
@@ -711,16 +717,16 @@ def bk_bubbles(doc, data=None, filters=None):
     max_size = 50
     # line_width = 2.5
     plot_indicators = ['brutrevenue', 'margin', 'weight', 'linecount']
-    select_indicators = [
-        'brutrevenue',
-        'margin',
-        'weight',
-        'linecount',
-        'PMVK',
-        'marginperkg',
-        'marginpercent',
-        'lineweight',
-    ]
+    select_indicators = (
+        [indicator + '_glob' for indicator in plot_indicators] +
+        plot_indicators +
+        [
+            'PMVK',
+            'marginperkg',
+            'marginpercent',
+            'lineweight',
+        ]
+    )
     plot_analysis_axes = ['seg3', 'origin2']
     hover_fields = [
         'margin',
@@ -729,6 +735,14 @@ def bk_bubbles(doc, data=None, filters=None):
         'marginpercent',
         'lineperorder',
     ]
+    axis_formatters = {indicator: '0' for indicator in select_indicators}
+    axis_formatters = {
+        **axis_formatters,
+        **{
+            'marginperkg': '0.0',
+            'marginpercent': '0%',
+        },
+        }
     # jsformats_tooltips = {
     #         'seg3_lib': '',
     #         'origin2_lib': '',
@@ -771,8 +785,8 @@ def bk_bubbles(doc, data=None, filters=None):
     select_size = Select(
         title="Taille des bulles",
         options=list(zip(
-            select_indicators,
-            list(map(lib, select_indicators))
+            ['constant'] + select_indicators,
+            ['Constante'] + list(map(lib, select_indicators))
         )),
         value=select_indicators[2],
         width=200,
@@ -873,6 +887,10 @@ def bk_bubbles(doc, data=None, filters=None):
             .groupby(groupers, observed=True)[plot_indicators]
             .sum()
         )
+        to_plot = to_plot.rename(
+            {indicator: indicator + '_glob' for indicator in plot_indicators},
+            axis=1,
+        )
         sizes = (
             data
             .loc[filters]
@@ -882,10 +900,23 @@ def bk_bubbles(doc, data=None, filters=None):
         )
         to_plot = to_plot.join(sizes).reset_index()
         del(sizes)
+        for indicator in plot_indicators:
+            try:
+                to_plot[indicator] = (
+                    to_plot[indicator + '_glob'] / to_plot['ordercount']
+                )
+            except KeyError:
+                pass
 
         # compute composite indicators
         # for indicator, components in utils.composite_indicators_dict:
-        to_plot = compute_composite_indicators(to_plot)
+        to_plot = compute_composite_indicators(
+            to_plot,
+            indicator_defs={
+                **composite_indicators_dict,
+                **{'lineperorder': ['linecount_glob', 'ordercount']},
+            }
+        )
 
         # compute designations
         for code in groupers:
@@ -902,6 +933,7 @@ def bk_bubbles(doc, data=None, filters=None):
             to_plot[indicator + '_s'] = to_plot[indicator] ** 0.5
             to_plot[indicator + '_s'] = (to_plot[indicator + '_s'] * max_size /
                                          to_plot[indicator + '_s'].max())
+        to_plot['constant_s'] = 20
 
         # compute colors
         for axis, colors in colormaps.items():
@@ -985,9 +1017,6 @@ def bk_bubbles(doc, data=None, filters=None):
         update_CDS()
 
     p = figure(plot_height=500, plot_width=800)
-    p.yaxis.formatter = NumeralTickFormatter(format='0')
-    p.xaxis.formatter = NumeralTickFormatter(format='0')
-
     p.multi_line(
         xs='xs',
         ys='ys',
@@ -1028,6 +1057,12 @@ def bk_bubbles(doc, data=None, filters=None):
         nonlocal p
         p.x_range.start = 0
         p.y_range.start = 0
+        p.yaxis.formatter = NumeralTickFormatter(
+            format=axis_formatters[select_y.value]
+            )
+        p.xaxis.formatter = NumeralTickFormatter(
+            format=axis_formatters[select_x.value]
+            )
         p.xaxis.axis_label = lib(select_x.value)
         p.yaxis.axis_label = lib(select_y.value)
         title = (
@@ -1098,6 +1133,7 @@ def bk_detail(
                     right=end_date,
                     fill_color=bin_colors[row_.status],
                     # fill_alpha=1.,
+                    level="underlay",
                 )
             )
         for box in boxes:
