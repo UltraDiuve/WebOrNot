@@ -4,6 +4,7 @@ import pandas as pd
 from pandas import IndexSlice as idx
 import matplotlib.pyplot as plt
 import matplotlib.colors as mcolor
+import matplotlib.ticker as mtick
 import seaborn as sns
 from pathlib import Path
 from functools import partial
@@ -37,6 +38,7 @@ composite_indicators_dict = {
 }
 
 libs = {
+    'branch': 'Branche',
     'orgacom': 'Succursale',
     'margin': 'Marge (€)',
     'brutrevenue': 'CA brut (€)',
@@ -101,6 +103,10 @@ formats = {
     'marginperkg_clt_zscore': '{:.3f}',
     'marginpercent_clt_zscore': '{:.3f}',
     'lineweight_clt_zscore': '{:.3f}',
+}
+
+plot_yaxis_fmts = {
+    'marginpercent': mtick.PercentFormatter(xmax=1),
 }
 
 colormaps = {
@@ -603,6 +609,15 @@ def plot_distrib(data=None,
                           for label in ax.get_xticklabels()]
         ax.set_xticklabels(ticklabels, fontsize=fontsizes_kwargs['x'])
 
+        if translate == True or 'legend' in translate:  # noqa: E712
+            handles, labels = ax.get_legend_handles_labels()
+            ax.get_legend().remove()
+            labels = map(partial(lib, domain=hue), labels)
+            ax.legend(handles, labels)
+
+        if indicator in plot_yaxis_fmts:
+            ax.yaxis.set_major_formatter(plot_yaxis_fmts[indicator])
+
         if IQR_factor_plot is not None:
             ax.set_ylim(plot_ranges.loc[indicator, 'minimum_plot_range'],
                         plot_ranges.loc[indicator, 'maximum_plot_range'])
@@ -717,16 +732,16 @@ def bk_bubbles(doc, data=None, filters=None):
     max_size = 50
     # line_width = 2.5
     plot_indicators = ['brutrevenue', 'margin', 'weight', 'linecount']
+    composite_indicators = ['PMVK', 'marginperkg', 'marginpercent',
+                            'lineweight']
     select_indicators = (
         [indicator + '_glob' for indicator in plot_indicators] +
         plot_indicators +
-        [
-            'PMVK',
-            'marginperkg',
-            'marginpercent',
-            'lineweight',
-        ]
+        composite_indicators
     )
+    for indicator in plot_indicators + composite_indicators:
+        if indicator + '_clt_zscore' in data.columns:
+            select_indicators.append(indicator + '_clt_zscore')
     plot_analysis_axes = ['seg3', 'origin2']
     hover_fields = [
         'margin',
@@ -741,6 +756,14 @@ def bk_bubbles(doc, data=None, filters=None):
         **{
             'marginperkg': '0.0',
             'marginpercent': '0%',
+            'brutrevenue_clt_zscore': '0.00',
+            'margin_clt_zscore': '0.00',
+            'weight_clt_zscore': '0.00',
+            'linecount_clt_zscore': '0.00',
+            'lineweight_clt_zscore': '0.00',
+            'marginperkg_clt_zscore': '0.00',
+            'marginpercent_clt_zscore': '0.00',
+            'PMVK_clt_zscore': '0.00',
         },
         }
     # jsformats_tooltips = {
@@ -909,7 +932,6 @@ def bk_bubbles(doc, data=None, filters=None):
                 pass
 
         # compute composite indicators
-        # for indicator, components in utils.composite_indicators_dict:
         to_plot = compute_composite_indicators(
             to_plot,
             indicator_defs={
@@ -917,6 +939,17 @@ def bk_bubbles(doc, data=None, filters=None):
                 **{'lineperorder': ['linecount_glob', 'ordercount']},
             }
         )
+
+        # compute z-score indicators
+        for indicator in plot_indicators + composite_indicators:
+            if indicator + '_clt_zscore' in data.columns:
+                ds = (
+                    data
+                    .groupby(groupers, observed=True)
+                    [indicator + '_clt_zscore']
+                    .mean()
+                )
+                to_plot = to_plot.set_index(groupers).join(ds).reset_index()
 
         # compute designations
         for code in groupers:
@@ -1055,13 +1088,22 @@ def bk_bubbles(doc, data=None, filters=None):
 
     def update_plot():
         nonlocal p
-        p.x_range.start = 0
-        p.y_range.start = 0
-        p.yaxis.formatter = NumeralTickFormatter(
-            format=axis_formatters[select_y.value]
-            )
+        nonlocal to_plot
+        if to_plot[select_x.value].min() >= 0:
+            # to fix, does not work: updating x_range.start does not work after
+            # the first time it has been done...
+            p.x_range.start = 0
+        else:
+            p.x_range.start = to_plot[select_x.value].min()
+        if to_plot[select_y.value].min() >= 0:
+            p.y_range.start = 0
+        else:
+            p.y_range.start = to_plot[select_y.value].min()            
         p.xaxis.formatter = NumeralTickFormatter(
             format=axis_formatters[select_x.value]
+            )
+        p.yaxis.formatter = NumeralTickFormatter(
+            format=axis_formatters[select_y.value]
             )
         p.xaxis.axis_label = lib(select_x.value)
         p.yaxis.axis_label = lib(select_y.value)
@@ -1105,10 +1147,10 @@ def bk_detail(
     if groupers is None:
         groupers = ['orgacom', 'client']
     roll_parms = dict(
-        window=20,
+        window=75,
         center=True,
         win_type='triang',
-        min_periods=1,
+        min_periods=15,
     )
 
     source = ColumnDataSource()
@@ -1184,11 +1226,11 @@ def bk_detail(
     dates = order_data.index.get_level_values(2)
     delta = (dates.max() - dates.min()).days
     month_rev = order_data.brutrevenue.sum() * 30 / delta
-    week_freq = len(order_data) * 7 / delta
+    month_freq = len(order_data) * 30 / delta
     client_info = Div(
         text=create_client_info(clt_data=clt_data, other_data={
             'month_revenue': f'{month_rev:.2f} €/mois',
-            'week_freq': f'{week_freq:.2f} com./sem.',
+            'month_freq': f'{month_freq:.2f} com./mois',
         }),
     )
 
@@ -1206,44 +1248,43 @@ def bk_detail(
     widgets = column(inactive_duration_input, window_input, button)
 
     # figures definitions
-    TOOLS = "pan,wheel_zoom,box_zoom,reset,box_select,lasso_select"
+    # TOOLS = "pan,wheel_zoom,box_zoom,reset,box_select,lasso_select"
     p_hist = figure(
         x_axis_type="datetime",
-        title='Détail pour ' + oc + ' / ' + client,
+        title='Historique de commande du client ' + oc + ' / ' + client,
         plot_height=280,
-        plot_width=600,
+        plot_width=800,
         toolbar_location=None,
         )
+    p_hist.yaxis.axis_label = "CA brut (€)"
     p_hist.y_range.start = 0
     p_hist.xaxis.ticker = MonthsTicker(months=list(range(1, 13)))
     p_hist.xaxis.major_label_orientation = pi / 2
     p_dens = figure(
         x_range=p_hist.x_range,
         x_axis_type="datetime",
+        title="Proportion de CA Web",
         plot_width=p_hist.plot_width,
         plot_height=280,
         toolbar_location=None,
     )
     p_dens.yaxis.formatter = NumeralTickFormatter(format='0 %')
     p_dens.y_range = Range1d(-.1, 1.1)
+    p_dens.yaxis.axis_label = "Pourcentage de CA Web (%)"
     p_perf = figure(
         x_range=p_hist.x_range,
         x_axis_type="datetime",
         plot_width=p_hist.plot_width,
         plot_height=280,
         toolbar_location=None,
+        title="Marge moyenne par jour"
     )
     p_perf.y_range.start = 0
     for plot in [p_hist, p_dens, p_perf]:
         plot.xaxis.ticker = MonthsTicker(months=list(range(1, 13)))
         plot.xaxis.major_label_orientation = pi / 2
-    p_compare = figure(
-        plot_width=500,
-        plot_height=500,
-        x_range=[-.05, 1.05],
-        tools=TOOLS,
-    )
-    p_compare.xaxis.formatter = NumeralTickFormatter(format='0 %')
+    p_perf.yaxis.formatter = NumeralTickFormatter(format="0")
+    p_perf.yaxis.axis_label = "Marge moyenne par jour (€/jour)"
 
     acquire_input()
 
@@ -1272,7 +1313,10 @@ def bk_detail(
             list(colormaps['origin2'])),
         source=hist_source,
         size=5.,
+        legend_field='origin2',
         )
+    p_hist.legend.location = 'top_right'
+
     p_dens.line(
         x='date_',
         y='WEB_percentage_',
@@ -1285,20 +1329,11 @@ def bk_detail(
         y='margin_rolled_total',
         source=source,
     )
-    p_compare.circle(
-        source=source,
-        x='WEB_percentage_',
-        y='margin_rolled_total',
-        color='black',
-        fill_alpha=.5,
-        line_alpha=.5,
-    )
 
     doc.add_root(
         row(
             column(client_info, widgets),
             column(p_hist, p_dens, p_perf),
-            column(p_compare),
             )
     )
 
@@ -1355,7 +1390,7 @@ def create_client_info(
     html += "<ul>"
     data_to_show = {
         'month_revenue': 'CA brut / mois',
-        'week_freq': "Commandes / semaine",
+        'month_freq': "Commandes / mois",
     }
     for code, lib in data_to_show.items():
         try:
