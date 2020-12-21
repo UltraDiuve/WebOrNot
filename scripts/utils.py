@@ -19,9 +19,15 @@ from bokeh.transform import factor_cmap
 from bokeh.layouts import row, column
 from bokeh.models.formatters import NumeralTickFormatter
 from bokeh.models.tickers import MonthsTicker
+import holoviews as hv
+# from holoviews import opts, dim
+from holoviews.operation.timeseries import rolling
+import panel as pn
+import param
 from math import pi
 from datetime import date
 from datetime import datetime
+import datetime as dt
 now = datetime.now
 
 
@@ -1098,7 +1104,7 @@ def bk_bubbles(doc, data=None, filters=None):
         if to_plot[select_y.value].min() >= 0:
             p.y_range.start = 0
         else:
-            p.y_range.start = to_plot[select_y.value].min()            
+            p.y_range.start = to_plot[select_y.value].min()
         p.xaxis.formatter = NumeralTickFormatter(
             format=axis_formatters[select_x.value]
             )
@@ -1660,3 +1666,444 @@ def day_orders_pipe(
     print(f'{now()}: Done! Elapsed: {now() - start}')
 
     return(df)
+
+
+def dedup(list_):
+    return(list(dict.fromkeys(list_)))
+
+
+def compute_grouped(
+    input_df=None,
+    atomic_keys=None,
+    population_keys=None,
+    intrapop_keys=None,
+):
+    indicator_df = (
+        input_df
+        .groupby(
+            dedup(population_keys + intrapop_keys),
+            observed=True,
+            dropna=False,
+        )
+        .sum()
+    )
+    size_df = (
+        input_df
+        .loc[:, dedup(atomic_keys + population_keys)]
+        .drop_duplicates()
+        .groupby(population_keys, observed=True)
+        .size()
+    )
+    aligned = size_df.align(indicator_df)
+    return(indicator_df, aligned[0], aligned[1])
+
+
+def compute_scope(
+    in_df=None,
+    field=None,
+    values=None,
+    atomic_keys=None,
+    status_names=None,
+    target_field=None,
+):
+    temp = (
+        in_df
+        .loc[~pd.isna(in_df[field]), atomic_keys + [field]]
+        .drop_duplicates()
+        .assign(in_period=True)
+        .set_index(atomic_keys + [field])
+        .unstack(field, fill_value=False)
+        .astype('bool')
+    )
+    temp.columns = [
+        '_'.join(index_) for index_ in temp.columns.to_flat_index()
+        ]
+    atoms = in_df[atomic_keys].drop_duplicates()
+    temp = atoms.merge(
+        temp,
+        how='left',
+        on=atomic_keys
+        ).set_index(atomic_keys).fillna(False)
+    temp[target_field] = None
+    temp.loc[
+        temp[('in_period_' + values[0])] &
+        temp[('in_period_' + values[1])],
+        target_field] = status_names[0]
+    temp.loc[
+        temp[('in_period_' + values[0])] &
+        ~temp[('in_period_' + values[1])],
+        target_field] = status_names[1]
+    temp.loc[
+        ~temp[('in_period_' + values[0])] &
+        temp[('in_period_' + values[1])],
+        target_field] = status_names[2]
+    temp.loc[
+        ~temp[('in_period_' + values[0])] &
+        ~temp[('in_period_' + values[1])],
+        target_field] = status_names[3]
+    return(temp[target_field])
+
+
+pn.param.Param._mapping.update(
+    {param.CalendarDate: pn.widgets.DatePicker}
+)
+
+
+class WebProgressShow(param.Parameterized):
+
+    orgacom = param.ObjectSelector(
+        objects={'Région Alsace': '1ALO', 'Région Occitanie': '1LRO'},
+        default='1ALO',
+        label='Succursale',
+    )
+
+    seg3 = param.ObjectSelector(
+        objects={
+            'Restauration commerciale indépendante': 'ZK',
+            'Restauration commerciale structurée': 'ZL',
+            'Restauration collective autogérée': 'ZI',
+            'Restauration collective concédée': 'ZJ',
+        },
+        default='ZK',
+        label='Segment 3',
+    )
+
+    indicator = param.ObjectSelector(
+        objects={'CA brut': 'brutrevenue', 'Marge': 'margin'},
+        default='margin',
+        label='Indicateur',
+    )
+
+    rolling_window = param.Integer(default=10, bounds=(1, 50))
+
+    d1period1 = param.CalendarDate(
+        dt.date(2019, 1, 1),
+        bounds=(dt.date(2017, 1, 1), dt.date(2021, 2, 1)),
+        label='Période 1 - Date 1',
+    )
+
+    d2period1 = param.CalendarDate(
+        dt.date(2019, 2, 28),
+        bounds=(dt.date(2017, 1, 1), dt.date(2021, 2, 1)),
+        label='Période 1 - Date 2',
+    )
+
+    d1period2 = param.CalendarDate(
+        dt.date(2020, 1, 1),
+        bounds=(dt.date(2017, 1, 1), dt.date(2021, 2, 1)),
+        label='Période 2 - Date 1',
+    )
+
+    d2period2 = param.CalendarDate(
+        dt.date(2020, 2, 29),
+        bounds=(dt.date(2017, 1, 1), dt.date(2021, 2, 1)),
+        label='Période 2 - Date 2',
+    )
+
+    indicator_cut = param.ObjectSelector(
+        objects={
+            'CA brut': 'brutrevenue',
+            'Marge': 'margin',
+            'Tonnage': 'weight',
+            'Nb lignes': 'linecount',
+            'Nb commandes': 'ordercount'
+        },
+        default='brutrevenue',
+        label='Indicateur pour classification client',
+    )
+
+    canal_cut = param.ObjectSelector(
+        objects=['TV', 'VR', 'WEB', 'EDI'],
+        default='WEB',
+        label='Canal pour classification client',
+    )
+
+    threshold_cut = param.Integer(
+        default=15,
+        bounds=(0, 100),
+        label='Seuil pour classification client',
+    )
+
+    def __init__(
+        self,
+        orders_path=None,
+        clt_path=None,
+    ):
+        super().__init__()
+        self.dfs = dict()
+        self.dfs['orders'] = pd.read_pickle(orders_path)
+        self.dfs['orders'] = self.dfs['orders'].reset_index()
+        self.dfs['orders'].date = self.dfs['orders'].date.dt.date
+        self.dfs['clt'] = pd.read_pickle(clt_path)
+        self.origins = self.dfs['orders'].origin2.unique()
+        self.compute_period_df()
+
+        # Refactoring needed here!
+        self.dfs['orgacom_date'] = (
+            self.dfs['orders']
+            .groupby(['orgacom', 'date'], observed=True)
+            .sum()
+        )
+        self.dfs['orgacom_origin2_date'] = (
+            self.dfs['orders']
+            .groupby(['orgacom', 'origin2', 'date'], observed=True)
+            .sum()
+        )
+        self.ocs = (
+            self.dfs['orgacom_date'].index.get_level_values('orgacom').unique()
+        )
+
+    def curve_indicator(
+        self,
+        data,
+        *,
+        orgacom=None,
+        indicator=None,
+        spans=None,
+    ):
+        # span should be a 2-tuple (period 1 and period 2) of
+        # 2-tuple of dates (start and end dates)
+        df = data.loc[self.orgacom]
+        holo = hv.HoloMap(
+            {
+                origin: hv.Curve(
+                    df.loc[origin],
+                    kdims=('date', 'La Date'),
+                    vdims=indicator,
+                ) for origin in self.origins
+            },
+            kdims=('origin2', 'Canal de commande')
+        )
+        span1 = hv.VSpan(*spans[0])
+        span2 = hv.VSpan(*spans[1])
+        return(
+            rolling(
+                holo.overlay('origin2'),
+                rolling_window=self.rolling_window,
+                window_type='triang')
+            * span1
+            * span2
+        )
+
+    @param.depends(
+        'd1period1',
+        'd2period1',
+        'd1period2',
+        'd2period2',
+        watch=True)
+    def compute_period_df(self):
+        # should be put elsewhere...
+        atomic_keys = ['orgacom', 'client']
+        intrapop_keys = ['origin2', 'period']
+        busdays = {
+            'P1': np.busday_count(self.d1period1, self.d2period1),
+            'P2': np.busday_count(self.d1period2, self.d2period2),
+        }
+
+        self.dfs['orders'] = self.dfs['orders'].set_index('date').sort_index()
+        self.dfs['orders']['period'] = None
+        self.dfs['orders'].loc[self.d1period1:self.d2period1, 'period'] = 'P1'
+        self.dfs['orders'].loc[self.d1period2:self.d2period2, 'period'] = 'P2'
+        self.dfs['orders'] = self.dfs['orders'].reset_index()
+        self.dfs['scope'] = compute_scope(
+            self.dfs['orders'],
+            field='period',
+            values=['P1', 'P2'],
+            atomic_keys=['orgacom', 'client'],
+            status_names=['in_scope', 'lost', 'new', 'out_of_scope'],
+            target_field='scope',
+        )
+        self.dfs['scope_orders'] = (
+            self.dfs['orders']
+            .set_index(['orgacom', 'client'])
+            .join(self.dfs['scope'])
+            .loc[lambda x: (x.scope == 'in_scope') & ~pd.isna(x.period)]
+            .reset_index()
+            .drop('scope', axis=1)
+        )
+        self.dfs['atom_intrapop'] = (
+            self.dfs['scope_orders']
+            .groupby(atomic_keys + intrapop_keys)
+            .agg(
+                margin=('margin', 'sum'),
+                brutrevenue=('brutrevenue', 'sum'),
+                weight=('weight', 'sum'),
+                linecount=('linecount', 'sum'),
+                ordercount=('weight', 'size'),
+            )
+            .reset_index()
+        )
+        self.dfs['atom_intrapop'] = self.dfs['atom_intrapop'].join(
+            self.dfs['atom_intrapop']
+            .select_dtypes('number')
+            .add_suffix('_perbusday')
+            .div(
+                self.dfs['atom_intrapop']['period']
+                .map(busdays),
+                axis=0,
+            )
+        )
+        # create statuses dataframe: all atomic keys x periods
+        # only requires to have a clear scope, so do it early
+        # nasty way to do a cartesian product...
+        self.dfs['statuses_template'] = (
+            self.dfs['atom_intrapop'][atomic_keys]
+            .drop_duplicates()
+            .assign(dummy=1)
+            .merge(
+                pd.DataFrame({'dummy': [1, 1], 'period': ['P1', 'P2']}),
+                on='dummy',
+            )
+            .drop('dummy', axis=1)
+            .assign(status=False)
+        )
+        self.compute_discriminant()
+
+    @param.depends('indicator_cut', watch=True)
+    def compute_discriminant(self):
+        # should be put elsewhere...
+        atomic_keys = ['orgacom', 'client']
+
+        self.dfs['atom_intrapop']['discriminant'] = (
+            self.dfs['atom_intrapop'][self.indicator_cut] /
+            (
+                self.dfs['atom_intrapop']
+                .groupby(atomic_keys + ['period'])[self.indicator_cut]
+                .transform('sum')
+            )
+        )
+        self.compute_statuses()
+
+    @param.depends('canal_cut', 'threshold_cut', watch=True)
+    def compute_statuses(self):
+        # should be put elsewhere...
+        atomic_keys = ['orgacom', 'client']
+
+        self.dfs['statuses'] = self.dfs['statuses_template'].copy()
+        self.dfs['statuses'].loc[:, 'status'] = False
+        status_index = (
+            self.dfs['atom_intrapop']
+            .loc[
+                lambda x: (
+                    (x['discriminant'] >= self.threshold_cut / 100) &
+                    (x['origin2'] == self.canal_cut)
+                ),
+                atomic_keys + ['period']
+            ]
+            .drop_duplicates()
+            .set_index(atomic_keys + ['period'])
+            .index
+        )
+        self.dfs['statuses'] = (
+            self.dfs['statuses'].set_index(atomic_keys + ['period'])
+        )
+        self.dfs['statuses'].loc[
+            status_index,
+            'status'
+        ] = True
+        # "Flatten" statuses dataframe
+        self.dfs['statuses'] = (
+            self.dfs['statuses']
+            .unstack('period')
+            .stack(level=0)
+            .reset_index(-1, drop=True)
+            .reset_index()
+        )
+
+    def sankey(self, data):
+        return(hv.Sankey(data))
+
+    @param.depends(
+        'orgacom',
+        'seg3',
+        'indicator',
+        'rolling_window',
+        'd1period1',
+        'd2period1',
+        'd1period2',
+        'd2period2',
+    )
+    def show_curve(self):
+        data = self.dfs['orgacom_origin2_date']
+        return(
+            self.curve_indicator(
+                data,
+                orgacom=self.orgacom,
+                indicator=self.indicator,
+                spans=(
+                    (self.d1period1, self.d2period1),
+                    (self.d1period2, self.d2period2)
+                )
+            )
+        )
+
+    @param.depends(
+        'orgacom',
+        'seg3',
+        'd1period1',
+        'd2period1',
+        'd1period2',
+        'd2period2',
+        'indicator_cut',
+        'canal_cut',
+        'threshold_cut'
+    )
+    def show_sankey(self):
+        data = (
+            self.dfs['statuses']
+            .set_index(['orgacom', 'client'])
+            .join(self.dfs['clt'].loc[:, 'seg3'])
+            .loc[self.orgacom]
+            .groupby(['P1', 'P2', 'seg3'])
+            .size()
+            .rename('size')
+            .reset_index()
+            .loc[lambda x: (x['seg3'] == self.seg3)]
+            .groupby(['P1', 'P2'])
+            .sum()['size']
+        )
+
+        sankey_input = []
+        translation = {
+            (0, True): 'WebP1',
+            (0, False): 'noWebP1',
+            (1, True): 'WebP2',
+            (1, False): 'noWebP2',
+        }
+
+        for line in data.iteritems():
+            nodes = list(enumerate(line[0]))
+    #         print(nodes)
+            sankey_input.append(
+                (
+                    translation[nodes[0]],
+                    translation[nodes[1]],
+                    line[1]
+                )
+            )
+        return(self.sankey(sankey_input))
+
+    def show_grid(self):
+        data = (
+            self.dfs['atom_intrapop']
+            .set_index(['orgacom', 'client'])
+            .join(self.dfs['clt']['seg3'])
+            .join(self.dfs['statuses'].set_index(['orgacom', 'client']))
+            .groupby(
+                ['orgacom', 'period', 'origin2', 'P1', 'P2', 'seg3'],
+                observed=True,
+            )
+            [self.indicator]
+            .sum()
+        )
+
+        # reprendre ici, en s'inspirant de ce qui a été fait pour la précédente
+        # représentation
+        # le hv.Dataset.to(hv.Bars, )... retourne une dynamicmap, qu'on peut
+        # ensuite "layouter"
+        # via .layout(critère de layout1, critère de layout2)
+        # donc il va sûrement falloir créer une fonction qui retourne la "Bars"
+        # unitaire puis layouter
+        # nécessite de définir proprement les dimensions...
+
+        return(data)
