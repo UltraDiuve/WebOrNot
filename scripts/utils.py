@@ -835,9 +835,15 @@ def bk_bubbles(doc, data=None, filters=None):
             return
         running = True
         if which_control == 'bubble':
+            me = select_bubble
             other = select_line
         if which_control == 'line':
+            me = select_line
             other = select_bubble
+            if old == 'None' and new == other.value:
+                me.value = 'None'
+                running = False
+                return
         if new == other.value:
             other.value = old
             update_CDS()
@@ -1165,7 +1171,7 @@ def bk_detail(
         window=75,
         center=True,
         win_type='triang',
-        min_periods=15,
+        min_periods=5,
     )
 
     source = ColumnDataSource()
