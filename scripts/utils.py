@@ -149,8 +149,9 @@ bin_colors = {
     'exclusive': 'red',
 }
 
-# The lines below might require improvement (with __file__ or smth else)
-path = Path('..') / 'data' / 'libelles_segments.csv'
+# The lines below requires that the data folder be on the same level like
+# the directory containing this script.
+path = Path(__file__).parents[0] / '..' / 'data' / 'libelles_segments.csv'
 lib_seg = pd.read_csv(path,
                       sep=';',
                       encoding='latin1',
@@ -910,9 +911,12 @@ def bk_bubbles(doc, data=None, filters=None):
         groupers = [select_bubble.value]
         if select_line.value != 'None':
             groupers.append(select_line.value)
+        if filters is not None:
+            filtered_data = data.loc[filters]
+        else:
+            filtered_data = data
         to_plot = (
-            data
-            .loc[filters]
+            filtered_data
             .groupby(groupers, observed=True)[plot_indicators]
             .sum()
         )
@@ -921,8 +925,7 @@ def bk_bubbles(doc, data=None, filters=None):
             axis=1,
         )
         sizes = (
-            data
-            .loc[filters]
+            filtered_data
             .groupby(groupers, observed=True)
             .size()
             .rename('ordercount')
@@ -950,7 +953,7 @@ def bk_bubbles(doc, data=None, filters=None):
         for indicator in plot_indicators + composite_indicators:
             if indicator + '_clt_zscore' in data.columns:
                 ds = (
-                    data
+                    filtered_data
                     .groupby(groupers, observed=True)
                     [indicator + '_clt_zscore']
                     .mean()
@@ -1002,11 +1005,12 @@ def bk_bubbles(doc, data=None, filters=None):
         line_lib=[],
     ))
     to_plot = select_data()
-    with pd.option_context('display.max_columns', None):
-        display(to_plot)
+    # with pd.option_context('display.max_columns', None):
+    #     display(to_plot)
 
     def update_CDS():
         global to_plot
+        nonlocal source
         if select_line.value != 'None':
             to_plot = to_plot.sort_values([select_line.value,
                                            select_x.value])
@@ -1042,11 +1046,16 @@ def bk_bubbles(doc, data=None, filters=None):
             # hover_field1=to_plot[select_line],
             # hover_field2=to_plot[select_bubble],
         )
+
         if select_line.value != 'None':
-            source_data = {
-                **source_data,
-                **{'line_color': to_plot[select_line.value + '_c']},
-                }
+            line_colors = to_plot[select_line.value + '_c']
+        else:
+            line_colors = [None] * len(to_plot)
+
+        source_data = {
+            **source_data,
+            **{'line_color': line_colors},
+            }
         source.data = source_data
         update_plot()
 
@@ -1695,7 +1704,7 @@ def compute_grouped(
         .size()
     )
     aligned = size_df.align(indicator_df)
-    return(indicator_df, aligned[0], aligned[1])
+    return(aligned)
 
 
 def compute_scope(
@@ -1824,6 +1833,11 @@ class WebProgressShow(param.Parameterized):
         label='Seuil pour classification client',
     )
 
+    evol_per_client = param.Boolean(
+        default=True,
+        label="Par client",
+    )
+
     def __init__(
         self,
         orders_path=None,
@@ -1861,7 +1875,7 @@ class WebProgressShow(param.Parameterized):
         indicator=None,
         spans=None,
     ):
-        # span should be a 2-tuple (period 1 and period 2) of
+        # spans should be a 2-tuple (period 1 and period 2) of
         # 2-tuple of dates (start and end dates)
         df = data.loc[self.orgacom]
         holo = hv.HoloMap(
@@ -1869,7 +1883,7 @@ class WebProgressShow(param.Parameterized):
                 origin: hv.Curve(
                     df.loc[origin],
                     kdims=('date', 'La Date'),
-                    vdims=indicator,
+                    vdims=hv.Dimension(indicator, label=indicator + '_'),
                 ) for origin in self.origins
             },
             kdims=('origin2', 'Canal de commande')
@@ -2083,27 +2097,67 @@ class WebProgressShow(param.Parameterized):
             )
         return(self.sankey(sankey_input))
 
+    def grid(
+        self,
+        data=None,
+        orgacom=None,
+        seg3=None,
+    ):
+        hv_ds = hv.Dataset(
+            data,
+            kdims=['period', 'origin2', 'P1', 'P2'],
+        )
+        self.inspect = hv_ds
+        return(
+            hv_ds.to(
+                hv.Bars,
+                kdims=['period', 'origin2']
+                )
+            .opts(stacked=True, cmap=colormaps['origin2'])
+            .layout(['P1', 'P2']).cols(2)
+        )
+
+    @param.depends(
+        'orgacom',
+        'seg3',
+        'indicator',
+        'd1period1',
+        'd2period1',
+        'd1period2',
+        'd2period2',
+        'indicator_cut',
+        'canal_cut',
+        'threshold_cut',
+        watch=True,
+    )
     def show_grid(self):
+# TODO  : reprendre ici. Il y a un conflit entre compute grouped, et le fait
+# qu'il faut absolument que tous les couples de statuts soient représentés
+# dans ma "grid"
         data = (
             self.dfs['atom_intrapop']
             .set_index(['orgacom', 'client'])
             .join(self.dfs['clt']['seg3'])
             .join(self.dfs['statuses'].set_index(['orgacom', 'client']))
+            .reset_index()
+            .set_index(['orgacom', 'seg3'])
+            .sort_index()
+            .loc[idx[self.orgacom, self.seg3]]
+            .astype({'P1': 'category', 'P2': 'category'})
             .groupby(
-                ['orgacom', 'period', 'origin2', 'P1', 'P2', 'seg3'],
-                observed=True,
+                ['P1', 'P2', 'period', 'origin2'],
             )
             [self.indicator]
             .sum()
+            .rename(self.indicator)
         )
 
-        # reprendre ici, en s'inspirant de ce qui a été fait pour la précédente
-        # représentation
-        # le hv.Dataset.to(hv.Bars, )... retourne une dynamicmap, qu'on peut
-        # ensuite "layouter"
-        # via .layout(critère de layout1, critère de layout2)
-        # donc il va sûrement falloir créer une fonction qui retourne la "Bars"
-        # unitaire puis layouter
-        # nécessite de définir proprement les dimensions...
+        if self.evol_per_client:
+            pass
 
-        return(data)
+        display(data)
+        return(self.grid(
+            data=data,
+            orgacom=self.orgacom,
+            seg3=self.seg3,
+        ))
