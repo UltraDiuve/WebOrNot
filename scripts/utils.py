@@ -1964,7 +1964,7 @@ class WebProgressShow(param.Parameterized):
             )
         )
         # create statuses dataframe: all atomic keys x periods
-        # only requires to have a clear scope, so do it early
+        # only requires to have a clear scope, so do it early.
         # nasty way to do a cartesian product...
         self.dfs['statuses_template'] = (
             self.dfs['atom_intrapop'][atomic_keys]
@@ -2093,14 +2093,14 @@ class WebProgressShow(param.Parameterized):
 
         for line in data.iteritems():
             nodes = list(enumerate(line[0]))
-    #         print(nodes)
-            sankey_input.append(
-                (
-                    translation[nodes[0]],
-                    translation[nodes[1]],
-                    line[1]
+            if line[1] > 0:
+                sankey_input.append(
+                    (
+                        translation[nodes[0]],
+                        translation[nodes[1]],
+                        line[1]
+                    )
                 )
-            )
         return(self.sankey(sankey_input))
 
     def grid(
