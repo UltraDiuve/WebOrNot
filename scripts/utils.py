@@ -91,6 +91,8 @@ libs = {
     'seg4_lib': 'Segmentation niveau 4',
 }
 
+suc_libs_inv = {libs[k]: k for k in ['1ALO', '1LRO', '1SOU', '2BRE']}
+
 formats = {
     'weight': '{:.2f} kg',
     'margin': '{:.2f} €',
@@ -1691,12 +1693,14 @@ def compute_grouped(
     input_df=None,
     atomic_keys=None,
     population_keys=None,
-    intrapop_keys=None,
+    subatomic_keys=None,
+    keys_to_expand=None,
+    expand_categories=None,
 ):
     indicator_df = (
         input_df
         .groupby(
-            dedup(population_keys + intrapop_keys),
+            dedup(population_keys + subatomic_keys),
             observed=True,
             dropna=False,
         )
@@ -1709,8 +1713,37 @@ def compute_grouped(
         .groupby(population_keys, observed=True)
         .size()
     )
-    aligned = size_df.align(indicator_df)
-    return(aligned)
+    # reorder index levels to be consistent with input
+    aligned = tuple(map(
+        lambda x: x.reorder_levels(dedup(population_keys + subatomic_keys)),
+        size_df.align(indicator_df),
+        ))
+    ret = aligned[1].div(aligned[0], axis=0).reset_index()
+
+    if keys_to_expand:
+        vals_to_expand = {
+            key: list(input_df[key].unique()) for key in keys_to_expand
+        }
+        if not expand_categories:
+            expand_categories = dict()
+        vals_to_expand = {**vals_to_expand, **expand_categories}
+        new_idx = pd.MultiIndex.from_product(
+            list(vals_to_expand.values()),
+            names=list(vals_to_expand.keys()),
+        )
+        nan_df = pd.DataFrame(
+            [np.nan] * len(new_idx),
+            index=new_idx,
+            columns=['dummy'],
+        )
+        ret = (
+            ret
+            .set_index(keys_to_expand)
+            .join(nan_df, how='outer')
+            .drop('dummy', axis=1)
+        )
+
+    return(ret)
 
 
 def compute_scope(
@@ -1767,7 +1800,7 @@ pn.param.Param._mapping.update(
 class WebProgressShow(param.Parameterized):
 
     orgacom = param.ObjectSelector(
-        objects={'Région Alsace': '1ALO', 'Région Occitanie': '1LRO'},
+        objects=suc_libs_inv,
         default='1ALO',
         label='Succursale',
     )
@@ -1850,6 +1883,12 @@ class WebProgressShow(param.Parameterized):
         clt_path=None,
     ):
         super().__init__()
+        self.group_names = {
+            (True, True): 'Fidèles',
+            (True, False): 'Abandonneurs',
+            (False, True): 'Adopteurs',
+            (False, False): 'Ignoreurs',
+        }
         self.dfs = dict()
         self.dfs['orders'] = pd.read_pickle(orders_path)
         self.dfs['orders'] = self.dfs['orders'].reset_index()
@@ -2029,6 +2068,13 @@ class WebProgressShow(param.Parameterized):
             .reset_index(-1, drop=True)
             .reset_index()
         )
+        self.dfs['statuses']['group'] = (
+            self.dfs['statuses']
+            .apply(
+                lambda x: self.group_names[(x['P1'], x['P2'])],
+                axis=1,
+            )
+        )
 
     def sankey(self, data):
         return(hv.Sankey(data))
@@ -2106,21 +2152,23 @@ class WebProgressShow(param.Parameterized):
     def grid(
         self,
         data=None,
-        orgacom=None,
-        seg3=None,
     ):
         hv_ds = hv.Dataset(
-            data,
-            kdims=['period', 'origin2', 'P1', 'P2'],
+            data.loc[
+                (data.orgacom == self.orgacom) &
+                (data.seg3 == self.seg3)
+            ],
+            kdims=['period', 'origin2', 'group'],
         )
         self.inspect = hv_ds
         return(
             hv_ds.to(
                 hv.Bars,
-                kdims=['period', 'origin2']
+                kdims=['period', 'origin2'],
+                vdims=[self.indicator],
                 )
             .opts(stacked=True, cmap=colormaps['origin2'])
-            .layout(['P1', 'P2']).cols(2)
+            .layout(['group']).cols(2)
         )
 
     @param.depends(
@@ -2137,33 +2185,25 @@ class WebProgressShow(param.Parameterized):
         watch=True,
     )
     def show_grid(self):
-# TODO  : reprendre ici. Il y a un conflit entre compute grouped, et le fait
-# qu'il faut absolument que tous les couples de statuts soient représentés
-# dans ma "grid"
-        data = (
+        data = compute_grouped(
             self.dfs['atom_intrapop']
             .set_index(['orgacom', 'client'])
             .join(self.dfs['clt']['seg3'])
-            .join(self.dfs['statuses'].set_index(['orgacom', 'client']))
-            .reset_index()
-            .set_index(['orgacom', 'seg3'])
-            .sort_index()
-            .loc[idx[self.orgacom, self.seg3]]
-            .astype({'P1': 'category', 'P2': 'category'})
-            .groupby(
-                ['P1', 'P2', 'period', 'origin2'],
+            .join(
+                self.dfs['statuses']
+                .set_index(['orgacom', 'client'])['group']
             )
-            [self.indicator]
-            .sum()
-            .rename(self.indicator)
-        )
+            .reset_index(),
+            atomic_keys=['orgacom', 'client'],
+            population_keys=['orgacom', 'seg3', 'group'],
+            subatomic_keys=['period', 'origin2'],
+            keys_to_expand=['orgacom', 'seg3', 'group', 'period'],
+        ).reset_index()
 
         if self.evol_per_client:
             pass
 
-        display(data)
+        # display(data)
         return(self.grid(
             data=data,
-            orgacom=self.orgacom,
-            seg3=self.seg3,
         ))
