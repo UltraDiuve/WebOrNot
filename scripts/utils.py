@@ -20,7 +20,7 @@ from bokeh.layouts import row, column
 from bokeh.models.formatters import NumeralTickFormatter
 from bokeh.models.tickers import MonthsTicker
 import holoviews as hv
-# from holoviews import opts, dim
+from holoviews import opts  # dim
 from holoviews.operation.timeseries import rolling
 import panel as pn
 import param
@@ -151,8 +151,8 @@ bin_colors = {
     'exclusive': 'red',
 }
 
-# The lines below requires that the data folder be on the same level like
-# the directory containing this script.
+# The lines below requires that the data and persist folders be on the same
+# level like the directory containing this script.
 path = Path(__file__).parents[0] / '..' / 'data' / 'libelles_segments.csv'
 lib_seg = pd.read_csv(path,
                       sep=';',
@@ -161,6 +161,8 @@ lib_seg = pd.read_csv(path,
                       names=['level', 'code', 'designation'],
                       index_col=['level', 'code']
                       )
+persist_path = Path(__file__).parents[0] / '..' / 'persist'
+
 transco = dict()
 for i in range(1, 7):
     transco['seg' + str(i)] = (
@@ -1869,12 +1871,25 @@ class WebProgressShow(param.Parameterized):
     threshold_cut = param.Integer(
         default=15,
         bounds=(0, 100),
+        step=5,
         label='Seuil pour classification client',
     )
 
     evol_per_client = param.Boolean(
         default=True,
         label="Par client",
+    )
+
+    indicator_grid = param.ObjectSelector(
+        objects={
+            'CA brut': 'brutrevenue',
+            'Marge': 'margin',
+            'Tonnage': 'weight',
+            'Nombre de lignes': 'linecount',
+            'Nombre de commandes': 'ordercount',
+            },
+        default='margin',
+        label='Indicateur',
     )
 
     def __init__(
@@ -2033,7 +2048,7 @@ class WebProgressShow(param.Parameterized):
         )
         self.compute_statuses()
 
-    @param.depends('canal_cut', 'threshold_cut', watch=True)
+    @param.depends('canal_cut', 'threshold_cut', 'indicator_cut', watch=True)
     def compute_statuses(self):
         # should be put elsewhere...
         atomic_keys = ['orgacom', 'client']
@@ -2075,6 +2090,41 @@ class WebProgressShow(param.Parameterized):
                 axis=1,
             )
         )
+        self.compute_grid_data()
+
+    def compute_grid_data(self):
+        self.dfs['grid_data'] = compute_grouped(
+            self.dfs['atom_intrapop']
+            .set_index(['orgacom', 'client'])
+            .join(self.dfs['clt']['seg3'])
+            .join(
+                self.dfs['statuses']
+                .set_index(['orgacom', 'client'])['group']
+            )
+            .reset_index(),
+            atomic_keys=['orgacom', 'client'],
+            population_keys=['orgacom', 'seg3', 'group'],
+            subatomic_keys=['period', 'origin2'],
+            keys_to_expand=['orgacom', 'seg3', 'group', 'period'],
+        ).reset_index()
+        self.compute_group_summaries()
+
+    def compute_group_summaries(self):
+        population_keys = ['orgacom', 'seg3']
+        data = (
+            self.dfs['grid_data']
+            .groupby(['group', 'period'] + population_keys)
+            .sum()
+            .unstack('period', fill_value=0)
+            .swaplevel(axis=1)
+        )
+        evo = pd.concat(
+            [(data['P2'] - data['P1']) / data['P1']],
+            axis=1,
+            keys=['evo']
+        )
+        data = pd.concat([data, evo], axis=1)
+        self.dfs['group_summaries'] = data
 
     def sankey(self, data):
         return(hv.Sankey(data))
@@ -2088,6 +2138,7 @@ class WebProgressShow(param.Parameterized):
         'd2period1',
         'd1period2',
         'd2period2',
+        watch=True,
     )
     def show_curve(self):
         data = self.dfs['orgacom_origin2_date']
@@ -2149,61 +2200,139 @@ class WebProgressShow(param.Parameterized):
                 )
         return(self.sankey(sankey_input))
 
-    def grid(
-        self,
-        data=None,
-    ):
+    @param.depends(
+        'orgacom',
+        'seg3',
+        'd1period1',
+        'd2period1',
+        'd1period2',
+        'd2period2',
+        'indicator_grid',
+        'threshold_cut',
+        'canal_cut',
+        'indicator_cut',
+        watch=True,
+    )
+    def grid(self):
         hv_ds = hv.Dataset(
-            data.loc[
-                (data.orgacom == self.orgacom) &
-                (data.seg3 == self.seg3)
-            ],
+            self.dfs['grid_data'],
             kdims=['period', 'origin2', 'group'],
         )
         self.inspect = hv_ds
         return(
-            hv_ds.to(
+            hv_ds
+            .select(orgacom=self.orgacom, seg3=self.seg3)
+            .to(
                 hv.Bars,
                 kdims=['period', 'origin2'],
-                vdims=[self.indicator],
+                vdims=[self.indicator_grid],
                 )
             .opts(stacked=True, cmap=colormaps['origin2'])
-            .layout(['group']).cols(2)
+            .layout(['group'])
         )
 
     @param.depends(
         'orgacom',
         'seg3',
-        'indicator',
         'd1period1',
         'd2period1',
         'd1period2',
         'd2period2',
-        'indicator_cut',
-        'canal_cut',
         'threshold_cut',
-        watch=True,
+        'canal_cut',
+        'indicator_cut',
     )
-    def show_grid(self):
-        data = compute_grouped(
-            self.dfs['atom_intrapop']
-            .set_index(['orgacom', 'client'])
-            .join(self.dfs['clt']['seg3'])
-            .join(
-                self.dfs['statuses']
-                .set_index(['orgacom', 'client'])['group']
+    def group_summaries(self):
+        indicators = [
+            'brutrevenue',
+            'brutrevenue_perbusday',
+            'margin',
+            'margin_perbusday',
+            'weight',
+            'weight_perbusday',
+        ]
+
+        row = []
+        for group_name in sorted(
+            self.dfs['group_summaries'].reset_index('group').group.unique()
+        ):
+            html = (
+                self.dfs['group_summaries']
+                .loc[
+                    idx[group_name, self.orgacom, self.seg3],
+                    idx[:, indicators]
+                ]
+                .unstack('period')
+            ).to_html(
+                formatters={
+                    'P1': lambda x: f'{x:.0f}',
+                    'P2': lambda x: f'{x:.0f}',
+                    'evo': lambda x: f'{x:.2%}',
+                }
             )
-            .reset_index(),
-            atomic_keys=['orgacom', 'client'],
-            population_keys=['orgacom', 'seg3', 'group'],
-            subatomic_keys=['period', 'origin2'],
-            keys_to_expand=['orgacom', 'seg3', 'group', 'period'],
-        ).reset_index()
+            row.append(pn.pane.HTML(html))
 
-        if self.evol_per_client:
-            pass
+        return(pn.Row(*row))
 
-        # display(data)
-        return(self.grid(
-            data=data,
-        ))
+
+def webprogress_dashboard():
+
+    webprogress = WebProgressShow(
+        orders_path=persist_path / 'orders.pkl',
+        clt_path=persist_path / 'clt.pkl'
+    )
+
+    dashboard = (
+        pn.Column(
+            pn.Row(
+                webprogress.param.orgacom,
+                webprogress.param.seg3,
+                align='center',
+            ),
+            pn.Row(
+                pn.Column(
+                    webprogress.param.indicator,
+                    webprogress.param.rolling_window,
+                    pn.Row(
+                        webprogress.param.d1period1,
+                        webprogress.param.d2period1,
+                    ),
+                    pn.Row(
+                        webprogress.param.d1period2,
+                        webprogress.param.d2period2,
+                    ),
+                ),
+                hv.DynamicMap(webprogress.show_curve, cache_size=1).opts(
+                    opts.Curve(width=600, framewise=True, axiswise=True),
+                    opts.Overlay(legend_position='top')
+                ),
+            ),
+            pn.Row(
+                pn.Column(
+                    webprogress.param.canal_cut,
+                    webprogress.param.indicator_cut,
+                    webprogress.param.threshold_cut,
+                ),
+                hv.DynamicMap(webprogress.show_sankey).opts(
+                    opts.Sankey(width=600, height=300, label_position='outer'),
+                ),
+            ),
+            pn.Row(
+                pn.Column(
+                    webprogress.param.indicator_grid,
+                ),
+                pn.Column(
+                    hv.DynamicMap(webprogress.grid, cache_size=1).opts(
+                        opts.Bars(show_legend=False, ),
+                    ),
+                    webprogress.group_summaries,
+                )
+            ),
+            pn.Row(
+                webprogress.param.orgacom,
+                webprogress.param.seg3,
+                align='center',
+            ),
+        )
+    )
+    return(dashboard)
