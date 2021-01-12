@@ -1714,13 +1714,16 @@ def compute_grouped(
         .drop_duplicates()
         .groupby(population_keys, observed=True)
         .size()
+        .fillna(0.)
+        .astype('int')
+        .rename('size')
     )
     # reorder index levels to be consistent with input
     aligned = tuple(map(
         lambda x: x.reorder_levels(dedup(population_keys + subatomic_keys)),
         size_df.align(indicator_df),
         ))
-    ret = aligned[1].div(aligned[0], axis=0).reset_index()
+    ret = aligned[1].div(aligned[0], axis=0).join(aligned[0]).reset_index()
 
     if keys_to_expand:
         vals_to_expand = {
@@ -1892,6 +1895,11 @@ class WebProgressShow(param.Parameterized):
         label='Indicateur',
     )
 
+    perbusday_grid = param.Boolean(
+        default=True,
+        label='Par jour ouvré',
+    )
+
     def __init__(
         self,
         orders_path=None,
@@ -1944,7 +1952,8 @@ class WebProgressShow(param.Parameterized):
                     df.loc[origin],
                     kdims=('date', 'La Date'),
                     vdims=hv.Dimension(indicator, label=indicator + '_'),
-                ) for origin in self.origins
+                ).opts(color=colormaps['origin2'][origin])
+                for origin in self.origins
             },
             kdims=('origin2', 'Canal de commande')
         )
@@ -1954,7 +1963,9 @@ class WebProgressShow(param.Parameterized):
             rolling(
                 holo.overlay('origin2'),
                 rolling_window=self.rolling_window,
-                window_type='triang')
+                window_type='triang').opts(
+                    opts.Curve(),
+                )
             * span1
             * span2
         )
@@ -2095,6 +2106,7 @@ class WebProgressShow(param.Parameterized):
     def compute_grid_data(self):
         self.dfs['grid_data'] = compute_grouped(
             self.dfs['atom_intrapop']
+            .drop('discriminant', axis=1)
             .set_index(['orgacom', 'client'])
             .join(self.dfs['clt']['seg3'])
             .join(
@@ -2111,10 +2123,19 @@ class WebProgressShow(param.Parameterized):
 
     def compute_group_summaries(self):
         population_keys = ['orgacom', 'seg3']
+        # sum all indicators except 'size' which is constant for every group
+        # and for which we default to 'mean'
+        agg_funcs = {
+            **{col: 'sum' for col in (
+                self.dfs['grid_data'].select_dtypes(include=np.number)
+            )},
+            **{'size': 'mean'},
+        }
+
         data = (
             self.dfs['grid_data']
             .groupby(['group', 'period'] + population_keys)
-            .sum()
+            .agg(agg_funcs)
             .unstack('period', fill_value=0)
             .swaplevel(axis=1)
         )
@@ -2123,7 +2144,7 @@ class WebProgressShow(param.Parameterized):
             axis=1,
             keys=['evo']
         )
-        data = pd.concat([data, evo], axis=1)
+        data = pd.concat([data, evo], axis=1).sort_index(axis=1)
         self.dfs['group_summaries'] = data
 
     def sankey(self, data):
@@ -2207,10 +2228,11 @@ class WebProgressShow(param.Parameterized):
         'd2period1',
         'd1period2',
         'd2period2',
-        'indicator_grid',
         'threshold_cut',
         'canal_cut',
         'indicator_cut',
+        'indicator_grid',
+        'perbusday_grid',        
         watch=True,
     )
     def grid(self):
@@ -2219,13 +2241,16 @@ class WebProgressShow(param.Parameterized):
             kdims=['period', 'origin2', 'group'],
         )
         self.inspect = hv_ds
+        indicator = self.indicator_grid
+        if self.perbusday_grid:
+            indicator += '_perbusday'
         return(
             hv_ds
             .select(orgacom=self.orgacom, seg3=self.seg3)
             .to(
                 hv.Bars,
                 kdims=['period', 'origin2'],
-                vdims=[self.indicator_grid],
+                vdims=[indicator],
                 )
             .opts(stacked=True, cmap=colormaps['origin2'])
             .layout(['group'])
@@ -2243,32 +2268,49 @@ class WebProgressShow(param.Parameterized):
         'indicator_cut',
     )
     def group_summaries(self):
-        indicators = [
-            'brutrevenue',
-            'brutrevenue_perbusday',
-            'margin',
-            'margin_perbusday',
-            'weight',
-            'weight_perbusday',
-        ]
+        population_keys = ['orgacom', 'seg3']
+
+        indicators = {
+            'size': 'Effectif',
+            'brutrevenue': 'CA brut (€)',
+            'brutrevenue_perbusday': 'CA brut (€/j.o.)',
+            'margin': 'Marge (€)',
+            'margin_perbusday': 'Marge (€/j.o.)',
+            'weight': 'Tonnage (kg)',
+            'weight_perbusday': 'Tonnage (kg/j.o)',
+        }
 
         row = []
+        data = (
+            self.dfs['group_summaries']
+            .loc[
+                idx[:, self.orgacom, self.seg3],
+                idx[:, indicators]
+            ]
+            .T
+            .unstack('period')
+            .droplevel(population_keys, axis=1)
+            .reindex(pd.Index(indicators))
+            # .reset_index()
+            .assign(long_indicator=lambda x: x.index.map(indicators))
+            .set_index('long_indicator')
+        )
+
         for group_name in sorted(
             self.dfs['group_summaries'].reset_index('group').group.unique()
         ):
             html = (
-                self.dfs['group_summaries']
-                .loc[
-                    idx[group_name, self.orgacom, self.seg3],
-                    idx[:, indicators]
-                ]
-                .unstack('period')
+                data.loc[:, group_name]
             ).to_html(
                 formatters={
                     'P1': lambda x: f'{x:.0f}',
                     'P2': lambda x: f'{x:.0f}',
                     'evo': lambda x: f'{x:.2%}',
-                }
+                },
+                # justify='center',
+                na_rep='-',
+                index_names=False,
+                table_id='my_table',
             )
             row.append(pn.pane.HTML(html))
 
@@ -2279,7 +2321,7 @@ def webprogress_dashboard():
 
     webprogress = WebProgressShow(
         orders_path=persist_path / 'orders.pkl',
-        clt_path=persist_path / 'clt.pkl'
+        clt_path=persist_path / 'clt.pkl',
     )
 
     dashboard = (
@@ -2320,6 +2362,7 @@ def webprogress_dashboard():
             pn.Row(
                 pn.Column(
                     webprogress.param.indicator_grid,
+                    webprogress.param.perbusday_grid,
                 ),
                 pn.Column(
                     hv.DynamicMap(webprogress.grid, cache_size=1).opts(
