@@ -2147,6 +2147,32 @@ class WebProgressShow(param.Parameterized):
         data = pd.concat([data, evo], axis=1).sort_index(axis=1)
         self.dfs['group_summaries'] = data
 
+        indicators = {
+            'size': 'Effectif',
+            'brutrevenue': 'CA brut (€)',
+            'brutrevenue_perbusday': 'CA brut (€/j.o.)',
+            'margin': 'Marge (€)',
+            'margin_perbusday': 'Marge (€/j.o.)',
+            'weight': 'Tonnage (kg)',
+            'weight_perbusday': 'Tonnage (kg/j.o)',
+        }
+        data = (
+            self.dfs['group_summaries']
+            .loc[
+                idx[:, self.orgacom, self.seg3],
+                idx[:, indicators]
+            ]
+            .T
+            .unstack('period')
+            .droplevel(population_keys, axis=1)
+            .reindex(pd.Index(indicators))
+            # .reset_index()
+            .assign(long_indicator=lambda x: x.index.map(indicators))
+            .set_index('long_indicator')
+        )
+
+        self.dfs['formatted_group_summaries'] = data
+
     def sankey(self, data):
         return(hv.Sankey(data))
 
@@ -2232,7 +2258,7 @@ class WebProgressShow(param.Parameterized):
         'canal_cut',
         'indicator_cut',
         'indicator_grid',
-        'perbusday_grid',        
+        'perbusday_grid',
         watch=True,
     )
     def grid(self):
@@ -2316,6 +2342,92 @@ class WebProgressShow(param.Parameterized):
 
         return(pn.Row(*row))
 
+    def group_summary_with_plot(self, group):
+        barplot = self.barplot(group, self.indicator_grid)
+        summary_table = self.group_summary(group)
+        col = pn.Column(
+            pn.Row(
+                pn.layout.HSpacer(),
+                pn.pane.HTML(f'<h3>{group}</h3>'),
+                pn.layout.HSpacer(),
+            ),
+            barplot,
+            pn.Row(
+                pn.layout.HSpacer(),
+                summary_table,
+                pn.layout.HSpacer(),
+            )
+        )
+        return(col)
+
+    def holomap_barplot(self, indicator):
+        hv_ds = hv.Dataset(
+            self.dfs['grid_data'],
+            kdims=['period', 'origin2', 'group'],
+        )
+        self.inspect = hv_ds
+        indicator = self.indicator_grid
+        if self.perbusday_grid:
+            indicator += '_perbusday'
+        return(
+            hv_ds
+            .select(orgacom=self.orgacom, seg3=self.seg3)
+            .to(
+                hv.Bars,
+                kdims=['group', 'period', 'origin2'],
+                vdims=[indicator],
+                )
+            # .opts(stacked=True, cmap=colormaps['origin2'], show_legend=False)
+        )
+
+    def barplot(self, group, indicator):
+        hv_ds = hv.Dataset(
+            self.dfs['grid_data'],
+            kdims=['period', 'origin2', 'group'],
+        ).select(group=group)
+        self.inspect = hv_ds
+        indicator = self.indicator_grid
+        if self.perbusday_grid:
+            indicator += '_perbusday'
+        return(
+            hv_ds
+            .select(orgacom=self.orgacom, seg3=self.seg3)
+            .to(
+                hv.Bars,
+                kdims=['period', 'origin2'],
+                vdims=[indicator],
+                )
+            .opts(stacked=True, cmap=colormaps['origin2'], show_legend=False)
+        )
+
+    def group_summary(self, group):
+        data = self.dfs['formatted_group_summaries']
+        html = (
+            data.loc[:, group]
+        ).to_html(
+            formatters={
+                'P1': lambda x: f'{x:.0f}',
+                'P2': lambda x: f'{x:.0f}',
+                'evo': lambda x: f'{x:.2%}',
+            },
+            # justify='center',
+            na_rep='-',
+            index_names=False,
+            table_id='my_table',
+        )
+
+        return(pn.pane.HTML(html))
+
+    def group_summaries_row(self):
+        groups = ['Adopteurs', 'Ignoreurs', 'Fidèles', 'Abandonneurs']
+        row = pn.Row(
+            *[
+                self.group_summary_with_plot(group)
+                for group in groups
+            ]
+        )
+        return(row)
+
 
 def webprogress_dashboard():
 
@@ -2323,6 +2435,8 @@ def webprogress_dashboard():
         orders_path=persist_path / 'orders.pkl',
         clt_path=persist_path / 'clt.pkl',
     )
+
+    parameters_width = 300
 
     dashboard = (
         pn.Column(
@@ -2333,27 +2447,39 @@ def webprogress_dashboard():
             ),
             pn.Row(
                 pn.Column(
+                    pn.layout.VSpacer(),
                     webprogress.param.indicator,
                     webprogress.param.rolling_window,
                     pn.Row(
                         webprogress.param.d1period1,
                         webprogress.param.d2period1,
+                        sizing_mode='scale_width',
                     ),
                     pn.Row(
                         webprogress.param.d1period2,
                         webprogress.param.d2period2,
+                        sizing_mode='scale_width',                        
                     ),
+                    pn.layout.VSpacer(),
+                    max_width=parameters_width,
+                    sizing_mode='scale_width',
                 ),
                 hv.DynamicMap(webprogress.show_curve, cache_size=1).opts(
                     opts.Curve(width=600, framewise=True, axiswise=True),
-                    opts.Overlay(legend_position='top')
+                    opts.Overlay(legend_position='top', responsive=True),
                 ),
+                max_width=1200,
+                sizing_mode='scale_width',
             ),
             pn.Row(
                 pn.Column(
+                    pn.layout.VSpacer(),
                     webprogress.param.canal_cut,
                     webprogress.param.indicator_cut,
                     webprogress.param.threshold_cut,
+                    pn.layout.VSpacer(),
+                    max_width=parameters_width,
+                    sizing_mode='scale_width',
                 ),
                 hv.DynamicMap(webprogress.show_sankey).opts(
                     opts.Sankey(width=600, height=300, label_position='outer'),
@@ -2361,15 +2487,14 @@ def webprogress_dashboard():
             ),
             pn.Row(
                 pn.Column(
+                    pn.layout.VSpacer(),
                     webprogress.param.indicator_grid,
                     webprogress.param.perbusday_grid,
+                    pn.layout.VSpacer(),
+                    max_width=parameters_width,
+                    sizing_mode='scale_width',                    
                 ),
-                pn.Column(
-                    hv.DynamicMap(webprogress.grid, cache_size=1).opts(
-                        opts.Bars(show_legend=False, ),
-                    ),
-                    webprogress.group_summaries,
-                )
+                webprogress.group_summaries_row,
             ),
             pn.Row(
                 webprogress.param.orgacom,
