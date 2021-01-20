@@ -12,7 +12,7 @@ from collections import namedtuple
 from IPython.display import display
 from bokeh.plotting import figure
 from bokeh.models import ColumnDataSource, FactorRange, Range1d, Span, Button
-from bokeh.models import TextInput, Div
+from bokeh.models import TextInput, Div, LabelSet
 from bokeh.models.widgets import Select, DatePicker, CheckboxGroup
 from bokeh.models.annotations import BoxAnnotation
 from bokeh.transform import factor_cmap
@@ -24,7 +24,7 @@ from holoviews import opts  # dim
 from holoviews.operation.timeseries import rolling
 import panel as pn
 import param
-from math import pi
+from math import pi, cos, sin, acos
 from datetime import date
 from datetime import datetime
 import datetime as dt
@@ -71,6 +71,11 @@ libs = {
     'marginpercent_clt_zscore': 'Marge % (%) - z-score',
     'lineweight_clt_zscore': 'Poids de la ligne (kg) - z-score',
     'PMVK_clt_zscore': 'PMVK (€/kg) - z-score',
+    'brutrevenue_perbusday': 'CA brut (€/j.o.)',
+    'margin_perbusday': 'Marge (€/j.o.)',
+    'weight_perbusday': 'Tonnage (kg/j.o.)',
+    'linecount_perbusday': 'Nombre de lignes (/j.o.)',
+    'ordercount_perbusday': 'Nombre de commandes (/j.o.)',
     'TV': 'Télévente',
     'VR': 'Vente route',
     'WEB': 'e-commerce',
@@ -1822,7 +1827,12 @@ class WebProgressShow(param.Parameterized):
     )
 
     indicator = param.ObjectSelector(
-        objects={'CA brut': 'brutrevenue', 'Marge': 'margin'},
+        objects={
+            'CA brut': 'brutrevenue',
+            'Marge': 'margin',
+            'Tonnage': 'weight',
+            'Nb lignes': 'linecount',
+        },
         default='margin',
         label='Indicateur',
     )
@@ -1951,7 +1961,7 @@ class WebProgressShow(param.Parameterized):
                 origin: hv.Curve(
                     df.loc[origin],
                     kdims=('date', 'La Date'),
-                    vdims=hv.Dimension(indicator, label=indicator + '_'),
+                    vdims=hv.Dimension(indicator, label=lib(indicator)),
                 ).opts(color=colormaps['origin2'][origin])
                 for origin in self.origins
             },
@@ -1997,6 +2007,15 @@ class WebProgressShow(param.Parameterized):
             atomic_keys=['orgacom', 'client'],
             status_names=['in_scope', 'lost', 'new', 'out_of_scope'],
             target_field='scope',
+        )
+        self.dfs['scope_orgacom_seg3'] = (
+            self.dfs['scope']
+            .to_frame()
+            .join(self.dfs['clt']['seg3'])
+            .groupby(['orgacom', 'seg3', 'scope'])
+            .size()
+            .unstack('scope', fill_value=0)
+            .sort_index()
         )
         self.dfs['scope_orders'] = (
             self.dfs['orders']
@@ -2259,7 +2278,6 @@ class WebProgressShow(param.Parameterized):
         'indicator_cut',
         'indicator_grid',
         'perbusday_grid',
-        watch=True,
     )
     def grid(self):
         hv_ds = hv.Dataset(
@@ -2276,9 +2294,9 @@ class WebProgressShow(param.Parameterized):
             .to(
                 hv.Bars,
                 kdims=['period', 'origin2'],
-                vdims=[indicator],
+                vdims=hv.Dimension(indicator, label=lib(indicator)),
                 )
-            .opts(stacked=True, cmap=colormaps['origin2'])
+            .opts(stacked=True, cmap=colormaps['origin2'], show_legend=False)
             .layout(['group'])
         )
 
@@ -2339,8 +2357,11 @@ class WebProgressShow(param.Parameterized):
                 table_id='my_table',
             )
             row.append(pn.pane.HTML(html))
-
-        return(pn.Row(*row))
+        row2 = [pn.layout.HSpacer()]
+        for pane in row[:-1]:
+            row2.extend([pane, pn.layout.HSpacer(), pn.layout.HSpacer()])
+        row2.extend([row[-1], pn.layout.HSpacer()])
+        return(pn.Row(*row2))
 
     def group_summary_with_plot(self, group):
         barplot = self.barplot(group, self.indicator_grid)
@@ -2428,6 +2449,25 @@ class WebProgressShow(param.Parameterized):
         )
         return(row)
 
+    @param.depends(
+        'orgacom',
+        'seg3',
+        'd1period1',
+        'd2period1',
+        'd1period2',
+        'd2period2',
+        watch=True,
+    )
+    def venn_with_filters(self):
+        data = (
+            self.dfs['scope_orgacom_seg3']
+            .loc[idx[self.orgacom, self.seg3], :]
+        )
+        pop1 = data.loc['lost'] + data.loc['in_scope']
+        pop2 = data.loc['new'] + data.loc['in_scope']
+        common = data.loc['in_scope']
+        return(venn_diagram(pop1, pop2, common))
+
 
 def webprogress_dashboard():
 
@@ -2458,7 +2498,7 @@ def webprogress_dashboard():
                     pn.Row(
                         webprogress.param.d1period2,
                         webprogress.param.d2period2,
-                        sizing_mode='scale_width',                        
+                        sizing_mode='scale_width',
                     ),
                     pn.layout.VSpacer(),
                     max_width=parameters_width,
@@ -2468,8 +2508,14 @@ def webprogress_dashboard():
                     opts.Curve(width=600, framewise=True, axiswise=True),
                     opts.Overlay(legend_position='top', responsive=True),
                 ),
-                max_width=1200,
-                sizing_mode='scale_width',
+                pn.Column(
+                    pn.layout.VSpacer(),
+                    pn.pane.Bokeh(webprogress.venn_with_filters(), height=320),
+                    pn.layout.VSpacer(),
+                ),
+                max_width=1800,
+                # height=500,
+                # sizing_mode='scale_both',
             ),
             pn.Row(
                 pn.Column(
@@ -2492,9 +2538,12 @@ def webprogress_dashboard():
                     webprogress.param.perbusday_grid,
                     pn.layout.VSpacer(),
                     max_width=parameters_width,
-                    sizing_mode='scale_width',                    
+                    sizing_mode='scale_width',
                 ),
-                webprogress.group_summaries_row,
+                pn.Column(
+                    webprogress.grid,
+                    webprogress.group_summaries,
+                ),
             ),
             pn.Row(
                 webprogress.param.orgacom,
@@ -2504,3 +2553,236 @@ def webprogress_dashboard():
         )
     )
     return(dashboard)
+
+
+def under_cord_area(r, alpha):
+    return(r ** 2 * (alpha - cos(alpha) * sin(alpha)))
+
+
+def get_angles_from_lengths(r1, r2, d):
+    try:
+        alpha_1 = acos((d ** 2 + r1 ** 2 - r2 ** 2) / (2 * d * r1))
+        alpha_2 = acos((d ** 2 + r2 ** 2 - r1 ** 2) / (2 * d * r2))
+        return(alpha_1, alpha_2)
+    except ValueError:
+        return(0., 0.)
+
+
+def intersect_area(r1, r2, d):
+    if d > (r1 + r2):
+        return(0)
+    if d <= abs(r1 - r2):
+        return(pi * min(r1, r2)**2)
+    alpha_1, alpha_2 = get_angles_from_lengths(r1, r2, d)
+    area_1, area_2 = under_cord_area(r1, alpha_1), under_cord_area(r2, alpha_2)
+    return(area_1 + area_2)
+
+
+def bounds(r1, r2):
+    return(abs(r1 - r2), r1 + r2)
+
+
+def optim(
+    func,
+    bounds,
+    target,
+    sign,
+    delta_frac=0.001,
+    n_iter=50,
+    debug=False
+):
+    # sign : +1 si fct croissante, -1 si décroissante
+    # 1 calcule les bornes et le delta
+    if sign == 1:
+        min_, max_ = func(bounds[0]), func(bounds[1])
+    else:
+        min_, max_ = func(bounds[1]), func(bounds[0])
+    delta = delta_frac * abs(max_ - min_)
+
+    cpt = 0
+    new_val, x = min_, bounds[0]
+    low, high = bounds[0], bounds[1]
+    while True:
+        if debug:
+            print(
+                f'cpt: {cpt}',
+                f'x: {x}',
+                f'low: {low}',
+                f'high: {high}',
+                f'current: {new_val}',
+                f'error: {abs(new_val - target)}',
+            )
+        x = (high + low) / 2
+        last_val = new_val
+        new_val = func(x)
+        if sign * new_val > sign * target:
+            high = x
+        else:
+            low = x
+        if abs(new_val - last_val) < delta:
+            break
+        cpt += 1
+        if cpt >= n_iter:
+            break
+
+    return(x)
+
+
+def venn_diagram(
+    pop1,
+    pop2,
+    common,
+    labels=('Perdus', 'Communs', 'Gagnés'),
+    labels2=('Période 1', 'Période 2'),
+    colors=('blue', 'red'),
+    fontsize='10pt',
+    debug=False,
+):
+    r1, r2 = (pop1 / pi) ** .5, (pop2 / pi) ** .5
+
+    distance = optim(
+        func=partial(intersect_area, r1, r2),
+        bounds=bounds(r1, r2),
+        target=common,
+        sign=-1,
+        delta_frac=.00001,
+    )
+
+    # screen dim
+    padding = max(r1, r2) * .1
+    xmin, xmax = -r1 - padding, distance + r2 + padding
+    xwidth = 2 * padding + r1 + r2 + distance
+    ywidth = 6 * padding + 2 * max(r1, r2)
+    size = max(xwidth, ywidth)
+    xcenter = (-r1 + distance + r2) / 2
+    ycenter = (0)
+
+    # labels for areas
+    annotation_height = -12 * padding
+    pop_counts = [pop1 - common, common, pop2 - common]
+    labels = [labels[i] + f' :\n{pop_counts[i]}' for i in range(3)]
+    xlabels = np.linspace(xmin, xmax, 7)[1::2]
+    area_centers = [
+        (-r1 + distance - r2)/2,
+        (r1 + distance - r2)/2,
+        (r1 + distance + r2) / 2,
+        ]
+
+    # labels for circles
+    annotation_height2 = 12 * padding
+    labels2 = [labels2[0] + f' :\n{pop1}', labels2[1] + f' :\n{pop2}']
+    xlabels2 = [xlabels[0], xlabels[-1]]
+
+    # anchors for top annotations
+    alpha1, alpha2 = get_angles_from_lengths(r1, r2, distance)
+    beta1, beta2 = (pi + alpha1) / 2, (pi + alpha2) / 2
+    anchors_x = [cos(beta1) * r1, -cos(beta2) * r2 + distance]
+    anchors_y = [sin(beta1) * r1, sin(beta2) * r2]
+
+    f = figure(match_aspect=True, aspect_scale=1)
+
+    # main circles
+    circle_source = ColumnDataSource(dict(
+        x=[0, distance],
+        y=[0, 0],
+        radius=[r1, r2],
+        color=colors,
+    ))
+    main_circles = f.circle(
+        x='x',
+        y='y',
+        radius='radius',
+        alpha=.3,
+        color='color',
+        line_width=4,
+        source=circle_source,
+    )
+
+    # bottom annotations
+    # target bottom annotations circles
+    f.circle(x=area_centers, y=[0, 0, 0], size=5, color='black')
+    # bottom anontations texts
+    labs = LabelSet(
+        source=ColumnDataSource(
+            dict(
+                text=labels, x=xlabels, y=[annotation_height] * len(xlabels),
+            ),
+        ),
+        x='x',
+        y='y',
+        text='text',
+        text_align='center',
+        text_font_size=fontsize,
+    )
+    f.add_layout(labs)
+    # bottom annotations arrows
+    f.multi_line(
+        xs=[[xlabels[i], area_centers[i]] for i in range(3)],
+        ys=[[annotation_height + 1.5 * padding, 0] for _ in range(3)],
+        line_color=['k'] * 3,
+    )
+
+    # top annotations
+    # target top annotation circles
+    f.circle(x=anchors_x, y=anchors_y, size=5, color=colors)
+    # top annotations texts
+    labs2 = LabelSet(
+        source=ColumnDataSource(
+            dict(
+                text=labels2,
+                x=xlabels2,
+                y=[annotation_height2] * len(labels2),
+                color=colors,
+            ),
+        ),
+        x='x',
+        y='y',
+        text_color='color',
+        text='text',
+        text_align='center',
+        text_baseline='middle',
+        render_mode='canvas',
+        text_font_size=fontsize,
+    )
+    f.add_layout(labs2)
+    # top annotations arrows
+    f.multi_line(
+        xs=[[xlabels2[i], anchors_x[i]] for i in range(2)],
+        ys=[[annotation_height2 - padding, anchors_y[i]] for i in range(2)],
+        line_color=colors,
+    )
+
+    # remove grid and axes
+    f.xgrid.visible = False
+    f.ygrid.visible = False
+    f.axis.visible = False
+
+    # figure dimensionss
+    f.x_range.start = xcenter - size/2
+    f.x_range.end = xcenter + size/2
+    f.y_range.start = ycenter - size/2
+    f.y_range.end = ycenter + size/2
+    f.plot_width = 320
+    f.plot_height = 320
+
+    if debug:
+        print(
+            f'r1: {r1:.3}',
+            f'r2: {r2:.3}',
+            f'padding: {padding:.3}',
+            f'annonation_height1: {annotation_height:.3}',
+            f'annonation_height2: {annotation_height2:.3}',
+            f'xwidth: {xwidth:.3}',
+            f'ywidth: {ywidth:.3}',
+            f'size: {size:.3}',
+            f'axis_range_x: {f.x_range.start:.3} -> {f.x_range.end:.3} = '
+            f'{f.x_range.end - f.x_range.start:.3}',
+            f'axis_range_y: {f.y_range.start:.3} -> {f.y_range.end:.3} = '
+            f'{f.y_range.end - f.y_range.start:.3}',
+            f'plot_width x plot_height: {f.plot_width} x {f.plot_height}',
+            sep='\n',
+        )
+
+    f.toolbar_location = None
+
+    return(f)
