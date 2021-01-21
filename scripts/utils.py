@@ -2628,6 +2628,263 @@ def optim(
     return(x)
 
 
+class VennDiagram(object):
+
+    def __init__(
+        self,
+        colors=['blue', 'red'],
+        labels=('Perdus', 'Communs', 'Gagnés'),
+        labels2=('Période 1', 'Période 2'),
+        fontsize='10pt',
+        initial_pop1=None,
+        initial_pop2=None,
+        initial_common=None,
+    ):
+        self.colors = colors
+        self.labels = labels
+        self.labels2 = labels2
+        self.fontsize = fontsize
+
+        self.f = figure(match_aspect=True, aspect_scale=1)
+
+        # remove grid and axes and toolbar
+        self.f.xgrid.visible = False
+        self.f.ygrid.visible = False
+        self.f.axis.visible = False
+        self.f.plot_width = 320
+        self.f.plot_height = 320
+        self.f.toolbar_location = None
+
+        # main circles
+        self.circle_source = ColumnDataSource(dict(
+            x=[0, 0],
+            y=[0, 0],
+            radius=[0, 0],
+            color=colors,
+        ))
+        self.f.circle(
+            x='x',
+            y='y',
+            radius='radius',
+            alpha=.3,
+            color='color',
+            line_width=4,
+            source=self.circle_source,
+        )
+
+        # invisible circle for border range update
+        self.border_source = ColumnDataSource(dict(
+            x=[],
+            y=[],
+        ))
+        border_circles = self.f.circle(x='x', y='y', source=self.border_source)
+        border_circles.visible = False
+
+        # bottom annotations
+        # area labels (bottom)
+        self.area_labels_source = ColumnDataSource(dict(
+            x=[],
+            y=[],
+            text=[],
+        ))
+        area_labels = LabelSet(
+            source=self.area_labels_source,
+            x='x',
+            y='y',
+            text='text',
+            text_align='center',
+            text_font_size=self.fontsize,
+        )
+        self.f.add_layout(area_labels)
+        # area center small circles
+        self.area_center_source = ColumnDataSource(dict(
+            x=[],
+            y=[],
+        ))
+        self.f.circle(
+            x='x',
+            y='y',
+            size=5,
+            color='black',
+            source=self.area_center_source
+        )
+        # bottom annotations arrows
+        self.bottom_arrows_source = ColumnDataSource(dict(
+            xs=[],
+            ys=[],
+            line_color=[],
+        ))
+        self.f.multi_line(
+            xs='xs',
+            ys='ys',
+            line_color='line_color',
+            source=self.bottom_arrows_source,
+        )
+
+        # top annotations
+        # target top annotation circles
+        self.top_annotation_circles_source = ColumnDataSource(dict(
+            x=[],
+            y=[],
+            color=[],
+        ))
+        self.f.circle(
+            x='x',
+            y='y',
+            size=5,
+            color='color',
+            source=self.top_annotation_circles_source,
+        )
+        # top annotations texts
+        self.circle_labels_source = ColumnDataSource(dict(
+            x=[],
+            y=[],
+            text=[],
+            color=[],
+        ))
+        labs2 = LabelSet(
+            source=self.circle_labels_source,
+            x='x',
+            y='y',
+            text_color='color',
+            text='text',
+            text_align='center',
+            text_baseline='middle',
+            render_mode='canvas',
+            text_font_size=self.fontsize,
+        )
+        self.f.add_layout(labs2)
+        # top annotations arrows
+        self.top_arrows_source = ColumnDataSource(dict(
+            xs=[],
+            ys=[],
+            line_color=[],
+        ))
+        self.f.multi_line(
+            source=self.top_arrows_source,
+            xs='xs',
+            ys='ys',
+            line_color='line_color',
+        )
+
+        if initial_common and initial_pop1 and initial_pop2:
+            self.update_CDS(initial_pop1, initial_pop2, initial_common)
+
+    def compute_values(self, pop1, pop2, common):
+
+        self.pop1, self.pop2, self.common = pop1, pop2, common
+
+        # computation of radii and distance
+        self.r1, self.r2 = (pop1 / pi) ** .5, (pop2 / pi) ** .5
+        self.common = common
+
+        self.distance = optim(
+            func=partial(intersect_area, self.r1, self.r2),
+            bounds=bounds(self.r1, self.r2),
+            target=self.common,
+            sign=-1,
+            delta_frac=.00001,
+        )
+
+    def update_CDS(self, pop1, pop2, common):
+        # compute radii and distance
+        self.compute_values(pop1, pop2, common)
+
+        # main circles datasource
+        self.circle_source.data = dict(
+            x=[0, self.distance],
+            y=[0, 0],
+            radius=[self.r1, self.r2],
+            color=self.colors,
+        )
+
+        # helpers for ranges computation
+        padding = max(self.r1, self.r2) * .1
+        xmin, xmax = -self.r1 - padding, self.distance + self.r2 + padding
+        xwidth = 2 * padding + self.r1 + self.r2 + self.distance
+        ywidth = 6 * padding + 2 * max(self.r1, self.r2)
+        size = max(xwidth, ywidth)
+        xcenter = (-self.r1 + self.distance + self.r2) / 2
+        ycenter = 0
+
+        # update of border circles datasource
+        self.border_source.data = dict(
+            x=[xcenter - size / 2, xcenter + size / 2],
+            y=[ycenter - size / 2, ycenter + size / 2],
+        )
+
+        # bottom annotations
+        # labels for areas
+        annotation_height = -12 * padding
+        pop_counts = [
+            self.pop1 - self.common,
+            self.common,
+            self.pop2 - self.common
+        ]
+        labels = [self.labels[i] + f' :\n{pop_counts[i]}' for i in range(3)]
+        xlabels = np.linspace(xmin, xmax, 7)[1::2]
+        self.area_labels_source.data = dict(
+            text=labels,
+            x=xlabels,
+            y=[annotation_height] * len(xlabels),
+        )
+        # small circles in center of areas (targets of arrows)
+        area_centers = [
+            (-self.r1 + self.distance - self.r2)/2,
+            (self.r1 + self.distance - self.r2)/2,
+            (self.r1 + self.distance + self.r2) / 2,
+        ]
+        self.area_center_source.data = dict(
+            x=area_centers,
+            y=[0, 0, 0]
+        )
+        # bottom annotations arrows
+        self.bottom_arrows_source.data = dict(
+            xs=[[xlabels[i], area_centers[i]] for i in range(3)],
+            ys=[[annotation_height + 1.5 * padding, 0] for _ in range(3)],
+            line_color=['k'] * 3,
+        )
+
+        # top annotation
+        # anchors for top annotations target circles
+        alpha1, alpha2 = get_angles_from_lengths(
+            self.r1, self.r2, self.distance)
+        beta1, beta2 = (pi + alpha1) / 2, (pi + alpha2) / 2
+        anchors_x = [
+            cos(beta1) * self.r1,
+            -cos(beta2) * self.r2 + self.distance
+        ]
+        anchors_y = [sin(beta1) * self.r1, sin(beta2) * self.r2]
+        # top annotation circles
+        self.top_annotation_circles_source.data = dict(
+            x=anchors_x,
+            y=anchors_y,
+            color=self.colors,
+        )
+        # top annotations texts
+        annotation_height2 = 12 * padding
+        labels2 = [
+            self.labels2[0] + f' :\n{self.pop1}',
+            self.labels2[1] + f' :\n{self.pop2}',
+            ]
+        xlabels2 = [xlabels[0], xlabels[-1]]
+        self.circle_labels_source.data = dict(
+            text=labels2,
+            x=xlabels2,
+            y=[annotation_height2] * len(labels2),
+            color=self.colors,
+        )
+        # top annotations arrows
+        self.top_arrows_source.data = dict(
+            xs=[[xlabels2[i], anchors_x[i]] for i in range(2)],
+            ys=[
+                [annotation_height2 - padding, anchors_y[i]]
+                for i in range(2)
+                ],
+            line_color=self.colors,
+        )
+
+
 def venn_diagram(
     pop1,
     pop2,
@@ -2659,14 +2916,18 @@ def venn_diagram(
 
     # labels for areas
     annotation_height = -12 * padding
-    pop_counts = [pop1 - common, common, pop2 - common]
+    pop_counts = [
+        pop1 - common,
+        common,
+        pop2 - common
+    ]
     labels = [labels[i] + f' :\n{pop_counts[i]}' for i in range(3)]
     xlabels = np.linspace(xmin, xmax, 7)[1::2]
     area_centers = [
         (-r1 + distance - r2)/2,
         (r1 + distance - r2)/2,
         (r1 + distance + r2) / 2,
-        ]
+    ]
 
     # labels for circles
     annotation_height2 = 12 * padding
@@ -2688,7 +2949,7 @@ def venn_diagram(
         radius=[r1, r2],
         color=colors,
     ))
-    main_circles = f.circle(
+    f.circle(
         x='x',
         y='y',
         radius='radius',
