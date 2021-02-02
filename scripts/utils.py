@@ -9,6 +9,7 @@ import seaborn as sns
 from pathlib import Path
 from functools import partial
 from collections import namedtuple
+from itertools import product
 from IPython.display import display
 from bokeh.plotting import figure
 from bokeh.models import ColumnDataSource, FactorRange, Range1d, Span, Button
@@ -120,6 +121,13 @@ formats = {
 
 plot_yaxis_fmts = {
     'marginpercent': mtick.PercentFormatter(xmax=1),
+}
+
+seg3_dict = {
+    'ZK': 'RCI',
+    'ZL': 'RCS',
+    'ZI': 'RCA',
+    'ZJ': 'RCC',
 }
 
 colormaps = {
@@ -3211,3 +3219,423 @@ class MarginAnalyzer(param.Parameterized):
         self.datasource['size'] = 10
         self.datasource['fill_color'] = 'blue'
         self.CDS.data = self.datasource
+
+
+periods = {
+    '6jan_fev': (
+        (
+            dt.date.fromisoformat('2019-01-01'),
+            dt.date.fromisoformat('2019-02-28')
+        ),
+        (
+            dt.date.fromisoformat('2020-01-01'),
+            dt.date.fromisoformat('2020-02-29')
+        )
+    ),
+    '5nov_dec': (
+        (
+            dt.date.fromisoformat('2018-11-01'),
+            dt.date.fromisoformat('2018-12-31')
+        ),
+        (
+            dt.date.fromisoformat('2019-11-01'),
+            dt.date.fromisoformat('2019-12-31')
+        )
+    ),
+    '4sep_oct': (
+        (
+            dt.date.fromisoformat('2018-09-01'),
+            dt.date.fromisoformat('2018-10-31')
+        ),
+        (
+            dt.date.fromisoformat('2019-09-01'),
+            dt.date.fromisoformat('2019-10-31')
+        )
+    ),
+    '3jui_aou': (
+        (
+            dt.date.fromisoformat('2018-07-01'),
+            dt.date.fromisoformat('2018-08-31')
+        ),
+        (
+            dt.date.fromisoformat('2019-07-01'),
+            dt.date.fromisoformat('2019-08-31')
+        )
+    ),
+    '2mai_jui': (
+        (
+            dt.date.fromisoformat('2018-05-01'),
+            dt.date.fromisoformat('2018-06-30')
+        ),
+        (
+            dt.date.fromisoformat('2019-05-01'),
+            dt.date.fromisoformat('2019-06-30')
+        )
+    ),
+    '1mar_avr': (
+        (
+            dt.date.fromisoformat('2018-03-01'),
+            dt.date.fromisoformat('2018-04-30')
+        ),
+        (
+            dt.date.fromisoformat('2019-03-01'),
+            dt.date.fromisoformat('2019-04-30')
+        )
+    ),
+}
+
+
+class ComparativeWebprogress(object):
+    def __init__(
+        self,
+        periods=periods,
+    ):
+        self.webprogress = WebProgressShow(
+            orders_path=persist_path / 'orders.pkl',
+            clt_path=persist_path / 'clt.pkl',
+        )
+        self.periods = periods
+        self.init_grid_df()
+        self.init_formatted()
+
+    def init_grid_df(self):
+        grid_dfs = dict()
+        for period_key, date_ranges in periods.items():
+            self.webprogress.computation_locker = True
+            print(period_key)
+            self.webprogress.d1period1 = date_ranges[0][0]
+            self.webprogress.d2period1 = date_ranges[0][1]
+            self.webprogress.d1period2 = date_ranges[1][0]
+            self.webprogress.d2period2 = date_ranges[1][1]
+            self.webprogress.computation_locker = False
+            grid_dfs[period_key] = self.webprogress.dfs['grid_data'].copy()
+        for period_key, df in grid_dfs.items():
+            df['period_key'] = period_key
+        grid_df = pd.concat(list(grid_dfs.values()), axis=0)
+        grid_df['seg3_l'] = grid_df.seg3.map(seg3_dict)
+        grid_df = grid_df.sort_values(
+            ['orgacom', 'seg3', 'group', 'period_key', 'period', 'origin2']
+        )
+        self.grid_df = grid_df
+
+    def init_formatted(self):
+        formatted = (
+            self.grid_df
+            .loc[~pd.isna(self.grid_df.seg3_l)]
+            .groupby([
+                'orgacom',
+                'seg3_l',
+                'period_key',
+                'group',
+                'period',
+                'size'
+            ])
+            .sum()
+            .fillna(0.)
+            .assign(
+                margin_perkg=lambda x: x.margin / x.weight,
+                margin_percent=lambda x: x.margin / x.brutrevenue,
+                PMVK=lambda x: x.brutrevenue / x.weight,
+            )
+            .unstack('period')
+            .swaplevel(axis=1).sort_index(axis=1)
+            .pipe(ComparativeWebprogress.compute_evol)
+            .swaplevel(axis=1).sort_index(axis=1)
+            .reset_index('size')
+            .reorder_levels(['group', 'period_key', 'orgacom', 'seg3_l'])
+            .sort_index()
+            .pipe(ComparativeWebprogress.compute_delta)
+            .reorder_levels(['period_key', 'orgacom', 'seg3_l', 'group'])
+            .sort_index()
+            .pipe(ComparativeWebprogress.reorder_cols)
+        )
+        formatted.loc[idx[:, :, :, 'Comparaison'], ('size', '')] = None
+        self.formatted = formatted
+
+    @staticmethod
+    def format_number(number):
+        if float(number) > 0:
+            style = '"color:green;"'
+        elif number < 0:
+            style = '"color:red;"'
+        else:
+            style = '"color:black;"'
+        return(f'<b style={style}>{number:.2%}</b>')
+
+    @staticmethod
+    def compute_evol(
+        df,
+        ref_col='P1',
+        new_col='P2',
+        key_idx='evo',
+    ):
+        df_evol_ratio = (
+            (df.loc[:, idx[new_col]] - df.loc[:, idx[ref_col]])
+            / df.loc[:, idx[ref_col]]
+        )
+        return(
+            pd.concat(
+                [
+                    df.loc[:, idx[ref_col]],
+                    df.loc[:, idx[new_col]],
+                    df_evol_ratio
+                ],
+                axis=1,
+                keys=[ref_col, new_col, key_idx],
+            )
+        )
+
+    @staticmethod
+    def compute_delta(
+        df,
+        ref_idx='Ignoreurs',
+        new_idx='Adopteurs',
+        key_idx='Comparaison',
+    ):
+        new = pd.concat(
+            [df.loc[idx[new_idx], :] - df.loc[idx[ref_idx], :]],
+            keys=[key_idx],
+        )
+        return(pd.concat([df, new]))
+
+    @staticmethod
+    def reorder_cols(
+        df,
+        lev1_order=[
+            'weight_perbusday',
+            'brutrevenue_perbusday',
+            'margin_perbusday',
+            'PMVK',
+            'margin_perkg',
+            'margin_percent',
+        ],
+        lev2_order=['P1', 'P2', 'evo'],
+    ):
+        return(
+            df.reindex(
+                [('size', '')] + list(product(lev1_order, lev2_order)),
+                axis=1,
+            )
+        )
+
+    dict_rep = {
+        '>size<': '>Nb<',
+        'weight_perbusday': 'Tonnage (kg/j.o.)',
+        'brutrevenue_perbusday': 'CA brut (€/j.o.)',
+        'margin_perbusday': 'Marge (€/j.o.)',
+        'PMVK': 'PMVK (€/kg)',
+        'margin_perkg': 'Marge kg (€/kg)',
+        'margin_percent': 'Marge % (%)',
+    }
+
+    @staticmethod
+    def dict_replace(string, dict_replace=dict_rep):
+        for k, v in dict_replace.items():
+            string = string.replace(k, v)
+        return(string)
+
+    def table(
+        self,
+        period_key=None,
+        orgacom=None,
+        seg3_l=None,
+        groups_of_interest=['Adopteurs', 'Ignoreurs', 'Comparaison'],
+        dict_rep=dict_rep,
+    ):
+        html = (
+            self.formatted
+            .loc[idx[period_key, orgacom, seg3_l, groups_of_interest], :]
+            .droplevel(list(range(3)))
+            .reindex(groups_of_interest)
+            .to_html(
+                header=True,
+                index_names=False,
+                index=True,
+                escape=False,
+                formatters={
+                    **{('size', ''): lambda x: f'{x:.0f}'},
+                    **{
+                        (indicator, period): lambda x: f'{x:.2f}' for indicator
+                        in self.formatted.columns.get_level_values(0)
+                        for period in ('P1', 'P2')
+                    },
+                    **{
+                        ('margin_percent', period): lambda x: f'{x:.2%}'
+                        for period in ('P1', 'P2')
+                    },
+                    **{
+                        (indicator, 'evo'):
+                            ComparativeWebprogress.format_number for indicator
+                            in self.formatted.columns.get_level_values(0)
+                    },
+                },
+            )
+        )
+
+        html += "<style>\n"
+        html += "th {text-align: center; horizontal-align: center; "
+        html += "padding-left: 3px; padding-right: 3px; font-size: 1.em}\n"
+        html += "td {text-align: center;padding-left: 3px; padding-right: 3px;"
+        html += " font-size: 1.em;}\n"
+        html += "</style>"
+        html = (
+            html
+            .replace(' class="dataframe"', '')
+            .replace('      <th></th>\n      <th></th>\n', '')
+            .replace('<th></th>', '<th rowspan="2"></th>')
+            .replace('<th>size</th>', '<th rowspan="2">size</th>')
+            .replace('nan', '-')
+        )
+        html = ComparativeWebprogress.dict_replace(html, dict_replace=dict_rep)
+        return(html)
+
+    def single_bar(
+        self,
+        indicator=None,
+        orgacom=None,
+        seg3_l=None,
+        group=None,
+        period_key=None,
+    ):
+        indicator_dict = {
+            'weight_perbusday': {'label': 'Tonnage', 'unit': 'kg/j.o.'},
+            'margin_perbusday': {'label': 'Marge', 'unit': '€/j.o.'},
+            'brutrevenue_perbusday': {'label': 'CA brut', 'unit': '€/j.o.'},
+        }
+        hv_ds = hv.Dataset(
+            self.grid_df,
+            kdims=[
+                'orgacom',
+                'seg3_l',
+                'group',
+                'period_key',
+                'period',
+                'origin2'
+            ],
+            vdims=[
+                'margin',
+                'brutrevenue',
+                'weight',
+                'linecount',
+                'ordercount',
+                'margin_perbusday',
+                'brutrevenue_perbusday',
+                'weight_perbusday',
+                'linecount_perbusday',
+                'ordercount_perbusday'
+            ],
+        )
+        if not period_key:
+            hv_ds = hv_ds.reduce(period_key=np.mean)
+        bar = hv_ds.to(
+            hv.Bars,
+            kdims=['period', 'origin2'],
+            vdims=hv.Dimension(indicator, **indicator_dict[indicator]),
+            dynamic=True,
+        ).opts(
+            stacked=True,
+            cmap=colormaps['origin2'],
+            show_legend=False,
+            width=120,
+            axiswise=True,
+            framewise=True,
+            bar_width=.5,
+            title='',
+            xlabel='',
+            height=250,
+            toolbar=None,
+        )
+        if period_key:
+            bar = bar.select(
+                orgacom=orgacom,
+                group=group,
+                seg3_l=seg3_l,
+                period_key=period_key,
+            )
+        else:
+            bar = bar.select(
+                orgacom=orgacom,
+                group=group,
+                seg3_l=seg3_l,
+            )
+        return(bar)
+
+    def pair_barplot(
+        self,
+        indicator=None,
+        orgacom=None,
+        seg3_l=None,
+        groups=None,
+        period_key=None,
+    ):
+        bar1 = self.single_bar(
+            indicator=indicator,
+            orgacom=orgacom,
+            seg3_l=seg3_l,
+            period_key=period_key,
+            group=groups[0],
+        )
+        bar2 = self.single_bar(
+            indicator=indicator,
+            orgacom=orgacom,
+            seg3_l=seg3_l,
+            period_key=period_key,
+            group=groups[1],
+        ).opts(width=100, ylabel='')
+        return(bar1 + bar2)
+
+    def triple_pair_barplot(
+        self,
+        indicators=[
+            'weight_perbusday',
+            'brutrevenue_perbusday',
+            'margin_perbusday',
+        ],
+        orgacom=None,
+        seg3_l=None,
+        groups=['Adopteurs', 'Ignoreurs'],
+        period_key=None,
+    ):
+        partial_pair = partial(
+            self.pair_barplot,
+            orgacom=orgacom,
+            seg3_l=seg3_l,
+            groups=groups,
+            period_key=period_key,
+        )
+        pair_list = [
+            partial_pair(indicator=indicator) for indicator in indicators
+        ]
+        return(hv.Layout(pair_list))
+
+    def dashboard_3_plots(
+        self,
+        indicators=[
+            'weight_perbusday',
+            'brutrevenue_perbusday',
+            'margin_perbusday',
+        ],
+        orgacom=None,
+        seg3_l=None,
+        groups=['Adopteurs', 'Ignoreurs'],
+        period_key=None,
+    ):
+        dashboard = pn.Column(
+            # title
+            pn.layout.VSpacer(),
+            self.pair_barplot(
+                period_key=period_key,
+                orgacom=orgacom,
+                seg3_l=seg3_l,
+                groups=groups,
+                indicator=indicators[0],
+            ),
+            pn.layout.VSpacer(),
+            pn.pane.HTML(self.table(
+                period_key=period_key,
+                orgacom=orgacom,
+                seg3_l=seg3_l,
+                groups=groups + ['Comparaison']
+            ))
+        )
+        return(dashboard)
