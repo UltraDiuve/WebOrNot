@@ -1863,6 +1863,11 @@ class WebProgressShow(param.Parameterized):
         label='Période 2 - Date 2',
     )
 
+    computation_locker = param.Boolean(
+        default=False,
+        label='Verrouillage des calculs',
+    )
+
     indicator_cut = param.ObjectSelector(
         objects={
             'CA brut': 'brutrevenue',
@@ -1985,6 +1990,7 @@ class WebProgressShow(param.Parameterized):
         'd2period1',
         'd1period2',
         'd2period2',
+        'computation_locker',
         watch=True)
     def compute_period_df(self):
         # should be put elsewhere...
@@ -1994,6 +2000,9 @@ class WebProgressShow(param.Parameterized):
             'P1': np.busday_count(self.d1period1, self.d2period1),
             'P2': np.busday_count(self.d1period2, self.d2period2),
         }
+
+        if self.computation_locker:
+            return()
 
         self.dfs['orders'] = self.dfs['orders'].set_index('date').sort_index()
         self.dfs['orders']['period'] = None
@@ -2017,6 +2026,12 @@ class WebProgressShow(param.Parameterized):
             .unstack('scope', fill_value=0)
             .sort_index()
         )
+
+        # we create the venn panel attributes here (depends on
+        # scope_orgacom_seg3 for initial values).
+        if not hasattr(self, 'venn_bokeh_pane'):
+            self.create_venn_panel()
+
         self.dfs['scope_orders'] = (
             self.dfs['orders']
             .set_index(['orgacom', 'client'])
@@ -2458,7 +2473,28 @@ class WebProgressShow(param.Parameterized):
         'd2period2',
         watch=True,
     )
+    def update_venn(self):
+        data = (
+            self.dfs['scope_orgacom_seg3']
+            .loc[idx[self.orgacom, self.seg3], :]
+        )
+        pop1 = data.loc['lost'] + data.loc['in_scope']
+        pop2 = data.loc['new'] + data.loc['in_scope']
+        common = data.loc['in_scope']
+        self.venn_object.update_CDS(pop1, pop2, common)
+
+    @param.depends(
+        'orgacom',
+        'seg3',
+        'd1period1',
+        'd2period1',
+        'd1period2',
+        'd2period2',
+        watch=True,
+    )
     def venn_with_filters(self):
+        # DEPRECATED! Now using a VennDiagram object (to enable linking of
+        # panel widgets and bokeh plot)
         data = (
             self.dfs['scope_orgacom_seg3']
             .loc[idx[self.orgacom, self.seg3], :]
@@ -2467,6 +2503,22 @@ class WebProgressShow(param.Parameterized):
         pop2 = data.loc['new'] + data.loc['in_scope']
         common = data.loc['in_scope']
         return(venn_diagram(pop1, pop2, common))
+
+    def create_venn_panel(self):
+        data = (
+            self.dfs['scope_orgacom_seg3']
+            .loc[idx[self.orgacom, self.seg3], :]
+        )
+        pop1 = data.loc['lost'] + data.loc['in_scope']
+        pop2 = data.loc['new'] + data.loc['in_scope']
+        common = data.loc['in_scope']
+        self.venn_object = VennDiagram(
+            initial_pop1=pop1,
+            initial_pop2=pop2,
+            initial_common=common,
+            fontsize='9pt',
+        )
+        self.venn_bokeh_pane = pn.pane.Bokeh(self.venn_object.f, height=320)
 
 
 def webprogress_dashboard():
@@ -2478,6 +2530,9 @@ def webprogress_dashboard():
 
     parameters_width = 300
 
+    # for debugging purpose
+    background = None  # '#0000FF'
+
     dashboard = (
         pn.Column(
             pn.Row(
@@ -2487,7 +2542,7 @@ def webprogress_dashboard():
             ),
             pn.Row(
                 pn.Column(
-                    pn.layout.VSpacer(),
+                    pn.layout.VSpacer(background=background),
                     webprogress.param.indicator,
                     webprogress.param.rolling_window,
                     pn.Row(
@@ -2500,45 +2555,53 @@ def webprogress_dashboard():
                         webprogress.param.d2period2,
                         sizing_mode='scale_width',
                     ),
-                    pn.layout.VSpacer(),
-                    max_width=parameters_width,
-                    sizing_mode='scale_width',
+                    webprogress.param.computation_locker,
+                    pn.layout.VSpacer(background=background),
+                    width=parameters_width,
+                    sizing_mode='stretch_height',
                 ),
+                pn.layout.HSpacer(background=background),
                 hv.DynamicMap(webprogress.show_curve, cache_size=1).opts(
                     opts.Curve(width=600, framewise=True, axiswise=True),
                     opts.Overlay(legend_position='top', responsive=True),
                 ),
+                pn.layout.HSpacer(background=background),
                 pn.Column(
-                    pn.layout.VSpacer(),
-                    pn.pane.Bokeh(webprogress.venn_with_filters(), height=320),
-                    pn.layout.VSpacer(),
+                    pn.layout.VSpacer(background=background),
+                    webprogress.venn_bokeh_pane,
+                    pn.layout.VSpacer(background=background),
                 ),
+                pn.layout.HSpacer(background=background),
                 max_width=1800,
                 # height=500,
                 # sizing_mode='scale_both',
             ),
+            pn.layout.VSpacer(background=background, min_height=20),
             pn.Row(
                 pn.Column(
-                    pn.layout.VSpacer(),
+                    pn.layout.VSpacer(background=background),
                     webprogress.param.canal_cut,
                     webprogress.param.indicator_cut,
                     webprogress.param.threshold_cut,
-                    pn.layout.VSpacer(),
-                    max_width=parameters_width,
-                    sizing_mode='scale_width',
+                    pn.layout.VSpacer(background=background),
+                    width=parameters_width,
+                    sizing_mode='stretch_height',
                 ),
+                pn.layout.HSpacer(background=background),
                 hv.DynamicMap(webprogress.show_sankey).opts(
                     opts.Sankey(width=600, height=300, label_position='outer'),
                 ),
+                pn.layout.HSpacer(background=background),
             ),
+            pn.layout.VSpacer(background=background, min_height=20),
             pn.Row(
                 pn.Column(
-                    pn.layout.VSpacer(),
+                    pn.layout.VSpacer(background=background),
                     webprogress.param.indicator_grid,
                     webprogress.param.perbusday_grid,
-                    pn.layout.VSpacer(),
-                    max_width=parameters_width,
-                    sizing_mode='scale_width',
+                    pn.layout.VSpacer(background=background),
+                    width=parameters_width,
+                    sizing_mode='stretch_height',
                 ),
                 pn.Column(
                     webprogress.grid,
@@ -3047,3 +3110,104 @@ def venn_diagram(
     f.toolbar_location = None
 
     return(f)
+
+
+class MarginAnalyzer(param.Parameterized):
+
+    orgacom = param.ObjectSelector(
+        objects=suc_libs_inv,
+        default='1ALO',
+        label='Succursale',
+    )
+
+    seg3 = param.ObjectSelector(
+        objects={
+            'Restauration commerciale indépendante': 'ZK',
+            'Restauration commerciale structurée': 'ZL',
+            'Restauration collective autogérée': 'ZI',
+            'Restauration collective concédée': 'ZJ',
+        },
+        default='ZK',
+        label='Segment 3',
+    )
+
+    date1 = param.CalendarDate(
+        dt.date(2019, 1, 1),
+        bounds=(dt.date(2017, 1, 1), dt.date(2021, 2, 1)),
+        label='Date début',
+    )
+
+    date2 = param.CalendarDate(
+        dt.date(2019, 2, 1),
+        bounds=(dt.date(2017, 1, 1), dt.date(2021, 2, 1)),
+        label='Date fin',
+    )
+
+    stop_cost = param.Number(
+        10.0,
+        bounds=(0, 30),
+        label='Coup de frein (€)',
+        step=1.0,
+        )
+
+    prepa_cost = param.Number(
+        0.05,
+        bounds=(0., .5),
+        label='Coût de préparation (€/kg)',
+        step=.001,
+    )
+
+    def __init__(
+        self,
+        orders_path=persist_path / 'orders.pkl',
+        clt_path=persist_path / 'clt.pkl'
+    ):
+        super().__init__()
+        self.orders = pd.read_pickle(orders_path)
+        self.clt = pd.read_pickle(clt_path)
+        self.update_datasource()
+        self.init_CDS()
+        self.update_CDS()
+        self.create_bokeh_pane()
+
+    def init_CDS(self):
+        self.CDS = ColumnDataSource(dict(
+            **{var: [] for var in self.datasource.columns},
+            **{var: [] for var in ['x', 'y', 'size', 'fill_color']},
+        ))
+
+    def create_bokeh_pane(self):
+        p = figure(plot_height=500, plot_width=800)
+        p.circle(
+            source=self.CDS,
+            x='x',
+            y='y',
+            size='size',  # size
+            fill_color='fill_color',
+            # line_color='line_color',
+            # line_width=.3,
+            # legend_field='fill_lib',
+            )
+        self.bokeh_pane = p
+
+    def update_datasource(self):
+        self.datasource = (
+            self.orders
+            .reset_index('date')
+            .loc[
+                lambda x: (x['date'].dt.date >= self.date1) &
+                (x['date'].dt.date <= self.date2) &
+                (x.orgacom == self.orgacom)
+            ]
+            .groupby(['orgacom', 'client'])
+            .sum()
+            .join(self.clt[['seg3', 'hier4']])
+        )
+        self.datasource['adjusted_margin_pertime'] = self.datasource['margin']
+
+    def update_CDS(self):
+        self.datasource['x'] = self.datasource['brutrevenue']
+        self.datasource['y'] = self.datasource['adjusted_margin_pertime']
+        self.datasource['size'] = 10
+        self.datasource['fill_color'] = 'blue'
+        self.CDS.data = self.datasource
