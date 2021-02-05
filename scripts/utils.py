@@ -3285,11 +3285,36 @@ periods = {
 }
 
 
-class ComparativeWebprogress(object):
+class ComparativeWebprogress(param.Parameterized):
+
+    orgacom = param.ObjectSelector(
+        objects=suc_libs_inv,
+        default='1ALO',
+        label='Succursale',
+    )
+
+    seg3_l = param.ObjectSelector(
+        objects={
+            'Restauration commerciale indépendante': 'RCI',
+            'Restauration commerciale structurée': 'RCS',
+            'Restauration collective autogérée': 'RCA',
+            'Restauration collective concédée': 'RCC',
+        },
+        default='RCI',
+        label='Segment 3',
+    )
+
+    period_key = param.ObjectSelector(
+        objects=list(periods.keys()) + [None],
+        default='6jan_fev',
+        label='Périodes à comparer',
+    )
+
     def __init__(
         self,
         periods=periods,
     ):
+        super().__init__()
         self.webprogress = WebProgressShow(
             orders_path=persist_path / 'orders.pkl',
             clt_path=persist_path / 'clt.pkl',
@@ -3297,6 +3322,7 @@ class ComparativeWebprogress(object):
         self.periods = periods
         self.init_grid_df()
         self.init_formatted()
+        self.update_bar_layout()
 
     def init_grid_df(self):
         grid_dfs = dict()
@@ -3351,6 +3377,62 @@ class ComparativeWebprogress(object):
         )
         formatted.loc[idx[:, :, :, 'Comparaison'], ('size', '')] = None
         self.formatted = formatted
+
+        agg_formatted = (
+            self.grid_df.loc[~pd.isna(self.grid_df.seg3_l)]
+            .groupby([
+                'orgacom',
+                'seg3_l',
+                'period_key',
+                'group',
+                'period',
+                'size',
+            ])
+            .sum()
+            .reset_index('size')
+            .assign(
+                total_size=lambda x: x.groupby(
+                    [
+                        'orgacom',
+                        'seg3_l',
+                        'group',
+                        'period',
+                    ])['size'].transform('sum'),
+                **{ind + suf:
+                    (lambda x, indic=ind+suf:
+                        (x[indic] * x['size'] / x['total_size']))
+                    for ind in [
+                        'margin',
+                        'brutrevenue',
+                        'weight',
+                        'linecount',
+                        'ordercount'
+                    ]
+                    for suf in ['', '_perbusday']}
+                    )
+            .drop('total_size', axis=1)
+            .groupby(['orgacom', 'seg3_l', 'group', 'period'])
+            .sum()
+            .set_index('size', append=True)
+            .assign(
+                margin_perkg=lambda x: x.margin / x.weight,
+                margin_percent=lambda x: x.margin / x.brutrevenue,
+                PMVK=lambda x: x.brutrevenue / x.weight,
+            )
+            .unstack('period')
+            .swaplevel(axis=1).sort_index(axis=1)
+            .pipe(ComparativeWebprogress.compute_evol)
+            .swaplevel(axis=1).sort_index(axis=1)
+            .reset_index('size')
+            .reorder_levels(['group', 'orgacom', 'seg3_l'])
+            .sort_index()
+            .pipe(ComparativeWebprogress.compute_delta)
+            .reorder_levels(['orgacom', 'seg3_l', 'group'])
+            .sort_index()
+            .pipe(ComparativeWebprogress.reorder_cols)
+        )
+        agg_formatted.loc[idx[:, :, 'Comparaison'], ('size', '')] = None
+        self.agg_formatted = agg_formatted
 
     @staticmethod
     def format_number(number):
@@ -3442,10 +3524,20 @@ class ComparativeWebprogress(object):
         groups_of_interest=['Adopteurs', 'Ignoreurs', 'Comparaison'],
         dict_rep=dict_rep,
     ):
+        if period_key:
+            data = (
+                self.formatted
+                .loc[idx[period_key, orgacom, seg3_l, groups_of_interest], :]
+                .droplevel(list(range(3)))
+            )
+        else:
+            data = (
+                self.agg_formatted
+                .loc[idx[orgacom, seg3_l, groups_of_interest], :]
+                .droplevel(list(range(2)))
+            )
         html = (
-            self.formatted
-            .loc[idx[period_key, orgacom, seg3_l, groups_of_interest], :]
-            .droplevel(list(range(3)))
+            data
             .reindex(groups_of_interest)
             .to_html(
                 header=True,
@@ -3496,12 +3588,18 @@ class ComparativeWebprogress(object):
         seg3_l=None,
         group=None,
         period_key=None,
+        hv_group=None,
+        hv_label=None,
     ):
         indicator_dict = {
             'weight_perbusday': {'label': 'Tonnage', 'unit': 'kg/j.o.'},
             'margin_perbusday': {'label': 'Marge', 'unit': '€/j.o.'},
             'brutrevenue_perbusday': {'label': 'CA brut', 'unit': '€/j.o.'},
         }
+
+        hv_group = hv_group if hv_group else 'Bars'
+        hv_label = hv_label if hv_label else ''
+
         hv_ds = hv.Dataset(
             self.grid_df,
             kdims=[
@@ -3532,6 +3630,8 @@ class ComparativeWebprogress(object):
             kdims=['period', 'origin2'],
             vdims=hv.Dimension(indicator, **indicator_dict[indicator]),
             dynamic=True,
+            group=hv_group,
+            label=hv_label,
         ).opts(
             stacked=True,
             cmap=colormaps['origin2'],
@@ -3574,6 +3674,8 @@ class ComparativeWebprogress(object):
             seg3_l=seg3_l,
             period_key=period_key,
             group=groups[0],
+            hv_group=indicator,
+            hv_label='Target',
         )
         bar2 = self.single_bar(
             indicator=indicator,
@@ -3581,33 +3683,31 @@ class ComparativeWebprogress(object):
             seg3_l=seg3_l,
             period_key=period_key,
             group=groups[1],
+            hv_group=indicator,
+            hv_label='Reference',
         ).opts(width=100, ylabel='')
-        return(bar1 + bar2)
+        return((bar1 + bar2).opts(toolbar=None))
 
-    def triple_pair_barplot(
+    @param.depends('orgacom', 'seg3_l', 'period_key', watch=True)
+    def update_bar_layout(
         self,
-        indicators=[
-            'weight_perbusday',
-            'brutrevenue_perbusday',
-            'margin_perbusday',
-        ],
-        orgacom=None,
-        seg3_l=None,
-        groups=['Adopteurs', 'Ignoreurs'],
-        period_key=None,
     ):
-        partial_pair = partial(
-            self.pair_barplot,
-            orgacom=orgacom,
-            seg3_l=seg3_l,
-            groups=groups,
-            period_key=period_key,
-        )
-        pair_list = [
-            partial_pair(indicator=indicator) for indicator in indicators
-        ]
-        return(hv.Layout(pair_list))
+        layout = hv.Layout([
+            self.pair_barplot(
+                indicator=indicator,
+                orgacom=self.orgacom,
+                seg3_l=self.seg3_l,
+                groups=['Adopteurs', 'Ignoreurs'],
+                period_key=self.period_key,
+            ) for indicator in [
+                'weight_perbusday',
+                'brutrevenue_perbusday',
+                'margin_perbusday'
+            ]
+        ]).opts(toolbar=None)
+        self.layout = layout
 
+    @param.depends('orgacom', 'seg3_l', 'period_key', watch=True)
     def dashboard_3_plots(
         self,
         indicators=[
@@ -3619,23 +3719,57 @@ class ComparativeWebprogress(object):
         seg3_l=None,
         groups=['Adopteurs', 'Ignoreurs'],
         period_key=None,
+        title=None,
+        bgcolor=None,  # for layout debugging purpose
     ):
+        print('dashboard 3 plots called!')
+        orgacom = orgacom if orgacom else self.orgacom
+        period_key = period_key if period_key else self.period_key
+        seg3_l = seg3_l if seg3_l else self.seg3_l
+
+        if not title:
+            title = f'{orgacom} - {seg3_l} - {period_key}'
+
         dashboard = pn.Column(
-            # title
-            pn.layout.VSpacer(),
-            self.pair_barplot(
-                period_key=period_key,
-                orgacom=orgacom,
-                seg3_l=seg3_l,
-                groups=groups,
-                indicator=indicators[0],
+            pn.Row(
+                pn.layout.HSpacer(background=bgcolor),
+                pn.pane.HTML(f'<center><h3>{title}</h3></center>', width=600),
+                pn.layout.HSpacer(background=bgcolor),
             ),
-            pn.layout.VSpacer(),
+            pn.layout.VSpacer(background=bgcolor),
+            pn.Row(
+                pn.layout.HSpacer(background=bgcolor),
+                self.pair_barplot(
+                    period_key=period_key,
+                    orgacom=orgacom,
+                    seg3_l=seg3_l,
+                    groups=groups,
+                    indicator=indicators[0],
+                ),
+                pn.layout.HSpacer(background=bgcolor),
+                self.pair_barplot(
+                    period_key=period_key,
+                    orgacom=orgacom,
+                    seg3_l=seg3_l,
+                    groups=groups,
+                    indicator=indicators[1],
+                ),
+                pn.layout.HSpacer(background=bgcolor),
+                self.pair_barplot(
+                    period_key=period_key,
+                    orgacom=orgacom,
+                    seg3_l=seg3_l,
+                    groups=groups,
+                    indicator=indicators[2],
+                ),
+                pn.layout.HSpacer(background=bgcolor),
+            ),
+            pn.layout.VSpacer(background=bgcolor),
             pn.pane.HTML(self.table(
                 period_key=period_key,
                 orgacom=orgacom,
                 seg3_l=seg3_l,
-                groups=groups + ['Comparaison']
+                groups_of_interest=groups + ['Comparaison']
             ))
         )
         return(dashboard)
