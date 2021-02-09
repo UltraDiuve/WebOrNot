@@ -3201,17 +3201,25 @@ class MarginAnalyzer(param.Parameterized):
     def update_datasource(self):
         self.datasource = (
             self.orders
-            .reset_index('date')
+            .reset_index()
             .loc[
                 lambda x: (x['date'].dt.date >= self.date1) &
                 (x['date'].dt.date <= self.date2) &
                 (x.orgacom == self.orgacom)
             ]
-            .groupby(['orgacom', 'client'])
+            .groupby(['orgacom', 'client'], observed=True)
             .sum()
             .join(self.clt[['seg3', 'hier4']])
         )
-        self.datasource['adjusted_margin_pertime'] = self.datasource['margin']
+        self.datasource['stop_cost'] = self.stop_cost
+        self.datasource['prepa_cost'] = (
+            self.datasource['weight'] * self.prepa_cost
+        )
+        self.datasource['adjusted_margin_pertime'] = (
+            self.datasource['margin']
+            - self.datasource['stop_cost']
+            - self.datasource['prepa_cost']
+        )
 
     def update_CDS(self):
         self.datasource['x'] = self.datasource['brutrevenue']
@@ -3322,7 +3330,7 @@ class ComparativeWebprogress(param.Parameterized):
         self.periods = periods
         self.init_grid_df()
         self.init_formatted()
-        self.update_bar_layout()
+        # self.update_bar_layout()  # Not required anymore...
 
     def init_grid_df(self):
         grid_dfs = dict()
@@ -3692,6 +3700,7 @@ class ComparativeWebprogress(param.Parameterized):
     def update_bar_layout(
         self,
     ):
+        # DEPRECATED! Is not useful anymore.
         layout = hv.Layout([
             self.pair_barplot(
                 indicator=indicator,
@@ -3707,7 +3716,33 @@ class ComparativeWebprogress(param.Parameterized):
         ]).opts(toolbar=None)
         self.layout = layout
 
-    @param.depends('orgacom', 'seg3_l', 'period_key', watch=True)
+    @param.depends('orgacom', 'seg3_l', 'period_key')
+    def get_weight_barplot(self):
+        # DEPRECATED! Is not useful anymore.
+        return(self.get_pair_barplot(indicator='weight_perbusday'))
+
+    def get_pair_barplot(
+        self,
+        indicator=None,
+    ):
+        # DEPRECATED! Is not useful anymore.
+        indicator = indicator.capitalize()
+        return(self.layout[indicator])
+
+    @param.depends('orgacom', 'seg3_l', 'period_key')
+    def dashboard_title(self):
+        period_l = {
+            '6jan_fev': 'Jan & Fev 2019/2020',
+            '5nov_dec': 'Nov & Dec 2018/2019',
+            '4sep_oct': 'Sep & Oct 2018/2019',
+            '3jui_aou': 'Juil & Aou 2018/2019',
+            '2mai_jui': 'Mai & Juin 2018/2019',
+            '1mar_avr': 'Mar & Avr 2018/2019',
+            None: 'Moyenne',
+        }[self.period_key]
+        title = f'Succurale {self.orgacom} - {self.seg3_l} - {period_l}'
+        return(title)
+
     def dashboard_3_plots(
         self,
         indicators=[
@@ -3727,8 +3762,7 @@ class ComparativeWebprogress(param.Parameterized):
         period_key = period_key if period_key else self.period_key
         seg3_l = seg3_l if seg3_l else self.seg3_l
 
-        if not title:
-            title = f'{orgacom} - {seg3_l} - {period_key}'
+        title = title if title else self.dashboard_title()
 
         dashboard = pn.Column(
             pn.Row(
