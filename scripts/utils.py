@@ -3128,14 +3128,14 @@ class MarginAnalyzer(param.Parameterized):
         label='Succursale',
     )
 
-    seg3 = param.ObjectSelector(
+    seg3_l = param.ObjectSelector(
         objects={
-            'Restauration commerciale indépendante': 'ZK',
-            'Restauration commerciale structurée': 'ZL',
-            'Restauration collective autogérée': 'ZI',
-            'Restauration collective concédée': 'ZJ',
+            'Restauration commerciale indépendante': 'RCI',
+            'Restauration commerciale structurée': 'RCS',
+            'Restauration collective autogérée': 'RCA',
+            'Restauration collective concédée': 'RCC',
         },
-        default='ZK',
+        default='RCI',
         label='Segment 3',
     )
 
@@ -3152,16 +3152,23 @@ class MarginAnalyzer(param.Parameterized):
     )
 
     stop_cost = param.Number(
-        10.0,
-        bounds=(0, 30),
+        0.,
+        bounds=(0, 200),
         label='Coup de frein (€)',
-        step=1.0,
+        step=5.0,
         )
 
     prepa_cost = param.Number(
-        0.05,
-        bounds=(0., .5),
-        label='Coût de préparation (€/kg)',
+        0.,
+        bounds=(0., 1.),
+        label='Coûts logistiques (€/kg)',
+        step=.001,
+    )
+
+    line_cost = param.Number(
+        0.,
+        bounds=(0., 1.),
+        label='Coûts logistiques (€/ligne)',
         step=.001,
     )
 
@@ -3173,10 +3180,23 @@ class MarginAnalyzer(param.Parameterized):
         super().__init__()
         self.orders = pd.read_pickle(orders_path)
         self.clt = pd.read_pickle(clt_path)
-        self.update_datasource()
+        self.clt['seg3_l'] = self.clt['seg3'].map(seg3_dict)
+        self.datasource = self.datasource_from_filters(
+            order_data=self.orders,
+            clt_data=self.clt,
+            orgacom=self.orgacom,
+            min_date=self.date1,
+            max_date=self.date2,
+        )
+        self.datasource = self.compute_adjusted_margin(
+            data=self.datasource,
+            stop_cost=self.stop_cost,
+            prepa_cost=self.prepa_cost,
+            line_cost=self.line_cost,
+        )
         self.init_CDS()
-        self.update_CDS()
         self.create_bokeh_pane()
+        self.update_CDS()
 
     def init_CDS(self):
         self.CDS = ColumnDataSource(dict(
@@ -3192,41 +3212,90 @@ class MarginAnalyzer(param.Parameterized):
             y='y',
             size='size',  # size
             fill_color='fill_color',
-            # line_color='line_color',
-            # line_width=.3,
-            # legend_field='fill_lib',
+            alpha=.7,
+            legend_field='seg3_l',
+            line_width=0.,
             )
-        self.bokeh_pane = p
+        p.legend.location = 'bottom_right'
+        self.bokeh_pane = pn.pane.Bokeh(p)
 
-    def update_datasource(self):
-        self.datasource = (
+    def datasource_from_filters(
+        self,
+        order_data=None,
+        clt_data=None,
+        orgacom=None,
+        min_date=None,
+        max_date=None,
+    ):
+        data = (
             self.orders
             .reset_index()
             .loc[
-                lambda x: (x['date'].dt.date >= self.date1) &
-                (x['date'].dt.date <= self.date2) &
-                (x.orgacom == self.orgacom)
+                lambda x:
+                    (x['date'].dt.date >= min_date) &
+                    (x['date'].dt.date <= max_date) &
+                    (x.orgacom == orgacom)
             ]
             .groupby(['orgacom', 'client'], observed=True)
-            .sum()
-            .join(self.clt[['seg3', 'hier4']])
+            .agg(
+                margin=('margin', 'sum'),
+                brutrevenue=('brutrevenue', 'sum'),
+                weight=('weight', 'sum'),
+                linecount=('linecount', 'sum'),
+                ordercount=('weight', 'size'),
+            )
+            .join(clt_data[['seg3', 'seg3_l', 'hier4']])
+            .loc[lambda x: ~pd.isna(x['seg3_l'])]
         )
-        self.datasource['stop_cost'] = self.stop_cost
-        self.datasource['prepa_cost'] = (
-            self.datasource['weight'] * self.prepa_cost
+        return(data)
+
+    @param.depends('orgacom', 'date1', 'date2', watch=True)
+    def update_datasource(self):
+        self.datasource = self.datasource_from_filters(
+            order_data=self.orders,
+            clt_data=self.clt,
+            orgacom=self.orgacom,
+            min_date=self.date1,
+            max_date=self.date2,
         )
-        self.datasource['adjusted_margin_pertime'] = (
+        self.update_adjusted_margin()
+
+    def compute_adjusted_margin(
+        self,
+        data=None,
+        stop_cost=None,
+        prepa_cost=None,
+        line_cost=None,
+    ):
+        # ! modifies data in place!
+        data['stop_cost'] = data['ordercount'] * stop_cost
+        data['prepa_cost'] = data['weight'] * prepa_cost
+        data['line_cost'] = data['linecount'] * line_cost
+        data['adjusted_margin_pertime'] = (
             self.datasource['margin']
             - self.datasource['stop_cost']
             - self.datasource['prepa_cost']
+            - self.datasource['line_cost']
         )
+        return(data)
+
+    @param.depends('stop_cost', 'prepa_cost', 'line_cost', watch=True)
+    def update_adjusted_margin(self):
+        self.compute_adjusted_margin(
+            data=self.datasource,
+            stop_cost=self.stop_cost,
+            prepa_cost=self.prepa_cost,
+            line_cost=self.line_cost,
+        )
+        self.update_CDS()
 
     def update_CDS(self):
         self.datasource['x'] = self.datasource['brutrevenue']
         self.datasource['y'] = self.datasource['adjusted_margin_pertime']
         self.datasource['size'] = 10
-        self.datasource['fill_color'] = 'blue'
-        self.CDS.data = self.datasource
+        self.datasource['fill_color'] = self.datasource['seg3'].map(colormaps['seg3'])
+        self.CDS.data = ColumnDataSource.from_df(self.datasource)
+        self.bokeh_pane.param.trigger('object')
 
 
 periods = {
