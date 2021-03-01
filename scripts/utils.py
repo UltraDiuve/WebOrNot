@@ -246,17 +246,23 @@ def process_df(df,
                avoirs_doctypes=['ZA01', 'ZA02'],
                indicators=['margin', 'brutrevenue', 'weight'],
                grouper_fields=['orgacom', 'date', 'client', 'material'],
+               debug=False,
                ):
     before_processing = df[indicators].sum()
     mask_ZC = df.doctype.isin(orders_doctypes)
     mask_ZA = df.doctype.isin(avoirs_doctypes)
-    raw_avoirs = df.loc[mask_ZA, grouper_fields + indicators].copy()
+    raw_avoirs = df.loc[mask_ZA, grouper_fields + indicators]
     avoirs = raw_avoirs.groupby(grouper_fields, observed=True).sum()
     mask_dup_ZC = (df.loc[mask_ZC]
                      .duplicated(grouper_fields, keep=False)
                      .rename('_duplicated'))
-    mask_dup_ZC = mask_dup_ZC.reindex(df.index, fill_value=False)
-    df = (df.merge(mask_dup_ZC, how='left', left_index=True, right_index=True))
+    # mask_dup_ZC = mask_dup_ZC.reindex(df.index, fill_value=False)
+    df = df.merge(
+        mask_dup_ZC,
+        how='left',
+        left_index=True,
+        right_index=True)
+    df['_duplicated'] = df['_duplicated'].fillna(False)
     to_update = (
         df.loc[~df._duplicated & mask_ZC, grouper_fields + indicators]
         .merge(avoirs,
@@ -278,6 +284,9 @@ def process_df(df,
           .index.isin(to_update.set_index(grouper_fields).index)
     )
     df = df.loc[~mask_to_del | ~df.doctype.isin(avoirs_doctypes)]
+    if debug:
+        display(df)
+        display(to_update)
     merged = df.merge(to_update, on=grouper_fields, how='left', indicator=True)
     del(to_update)
     merged_mask_ZC = merged.doctype.isin(orders_doctypes)
@@ -3128,16 +3137,16 @@ class MarginAnalyzer(param.Parameterized):
         label='Succursale',
     )
 
-    seg3_l = param.ObjectSelector(
-        objects={
-            'Restauration commerciale indépendante': 'RCI',
-            'Restauration commerciale structurée': 'RCS',
-            'Restauration collective autogérée': 'RCA',
-            'Restauration collective concédée': 'RCC',
-        },
-        default='RCI',
-        label='Segment 3',
-    )
+    # seg3_l = param.ObjectSelector(
+    #     objects={
+    #         'Restauration commerciale indépendante': 'RCI',
+    #         'Restauration commerciale structurée': 'RCS',
+    #         'Restauration collective autogérée': 'RCA',
+    #         'Restauration collective concédée': 'RCC',
+    #     },
+    #     default='RCI',
+    #     label='Segment 3',
+    # )
 
     date1 = param.CalendarDate(
         dt.date(2019, 1, 1),
@@ -3194,6 +3203,7 @@ class MarginAnalyzer(param.Parameterized):
             prepa_cost=self.prepa_cost,
             line_cost=self.line_cost,
         )
+        self.update_composite_indicators()
         self.init_CDS()
         self.create_bokeh_pane()
         self.update_CDS()
@@ -3266,12 +3276,14 @@ class MarginAnalyzer(param.Parameterized):
         stop_cost=None,
         prepa_cost=None,
         line_cost=None,
+        inplace=True,
     ):
-        # ! modifies data in place!
+        if not inplace:
+            data = data.copy()
         data['stop_cost'] = data['ordercount'] * stop_cost
         data['prepa_cost'] = data['weight'] * prepa_cost
         data['line_cost'] = data['linecount'] * line_cost
-        data['adjusted_margin_pertime'] = (
+        data['adjusted_margin'] = (
             self.datasource['margin']
             - self.datasource['stop_cost']
             - self.datasource['prepa_cost']
@@ -3287,15 +3299,34 @@ class MarginAnalyzer(param.Parameterized):
             prepa_cost=self.prepa_cost,
             line_cost=self.line_cost,
         )
+        self.update_composite_indicators()
         self.update_CDS()
 
     def update_CDS(self):
         self.datasource['x'] = self.datasource['brutrevenue']
-        self.datasource['y'] = self.datasource['adjusted_margin_pertime']
+        self.datasource['y'] = self.datasource['adjusted_margin']
         self.datasource['size'] = 10
-        self.datasource['fill_color'] = self.datasource['seg3'].map(colormaps['seg3'])
+        self.datasource['fill_color'] = (
+            self.datasource['seg3'].map(colormaps['seg3'])
+        )
         self.CDS.data = ColumnDataSource.from_df(self.datasource)
         self.bokeh_pane.param.trigger('object')
+
+    def update_composite_indicators(self):
+        indicator_dict = dict(
+            **composite_indicators_dict,
+            **{
+                    'adjusted_marginperkg': ['adjusted_margin', 'weight'],
+                    'adjusted_marginpercent': [
+                        'adjusted_margin',
+                        'brutrevenue'
+                    ],
+            }
+        )
+        self.datasource = compute_composite_indicators(
+            self.datasource,
+            indicator_defs=indicator_dict,
+            )
 
 
 periods = {
