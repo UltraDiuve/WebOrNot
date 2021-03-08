@@ -3,6 +3,7 @@ data/*
 !data/.gitkeep
 persist/*
 !persist/.gitkeep
+**/dask-worker-space/
 
 # Byte-compiled / optimized / DLL files
 __pycache__/
