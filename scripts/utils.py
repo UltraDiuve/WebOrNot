@@ -59,6 +59,7 @@ libs = {
     'size': 'Nb commandes',
     'origin': 'Canal de commande',
     'origin2': 'Canal de commande',
+    'main_origin': 'Canal de commande',
     'brutrevenue_glob': 'CA brut total (€)',
     'margin_glob': 'Marge totale (€)',
     'weight_glob': 'Tonnage total (kg)',
@@ -148,7 +149,13 @@ colormaps = {
         'VR': mcolorpalette[1],
         'WEB': mcolorpalette[2],
         'EDI': mcolorpalette[3],
-    }
+    },
+    'main_origin': {
+        'TV': mcolorpalette[0],
+        'VR': mcolorpalette[1],
+        'WEB': mcolorpalette[2],
+        'EDI': mcolorpalette[3],
+    },    
 }
 
 labeled_bins = namedtuple('labeled_bins', ['labels', 'bin_limits'])
@@ -248,7 +255,12 @@ def process_df(df,
                grouper_fields=['orgacom', 'date', 'client', 'material'],
                debug=False,
                ):
+    init_index = df.index.names
+    init_cols = df.columns
     before_processing = df[indicators].sum()
+
+    df = df.reset_index()
+
     mask_ZC = df.doctype.isin(orders_doctypes)
     mask_ZA = df.doctype.isin(avoirs_doctypes)
     raw_avoirs = df.loc[mask_ZA, grouper_fields + indicators]
@@ -297,13 +309,20 @@ def process_df(df,
                                            merged[indicator + '_y'])
         )
         merged = merged.drop(columns=[indicator + '_x', indicator + '_y'])
-    merged = merged.drop(columns='_merge')
+    merged = (
+        merged
+        .drop(columns=['_merge', '_duplicated'])
+        .set_index(init_index)
+        [init_cols]  # reorder columns
+        .sort_index()
+    )
+    merged = merged
     df = merged
     del(merged)
     after_processing = df[indicators].sum()
     delta = after_processing - before_processing
     print(f'Evolution des indicateurs pendant le traitement : \n{delta}')
-    if max(delta.max(), abs(delta.min())) > .1:
+    if max(delta.max(), abs(delta.min())) > .001:
         raise RuntimeError('Something bad happened during avoir processing')
     return(df)
 
@@ -658,13 +677,15 @@ def plot_distrib(data=None,
     return(fig, axs)
 
 
-def bk_histo_seg(doc,
-                 source_df=None,
-                 segs=None,
-                 filters=None,
-                 filters_exclude=None,
-                 plot_kwargs=None,
-                 ):
+def bk_histo_seg(
+    doc,
+    source_df=None,
+    segs=None,
+    stack_axis='origin2',
+    filters=None,
+    filters_exclude=None,
+    plot_kwargs=None,
+):
     '''
     Bokeh server app that enables to draw stacked bar plot on segmentation
     '''
@@ -703,10 +724,10 @@ def bk_histo_seg(doc,
 
     def compute_indicator(df, indicator):
         temp = (
-            df.groupby(['origin2'] + segs + ['orgacom'],
+            df.groupby([stack_axis] + segs + ['orgacom'],
                        observed=True,)[indicator]
               .sum()
-              .unstack('origin2', fill_value=0.)
+              .unstack(stack_axis, fill_value=0.)
               .reindex(columns=origins)
               .reset_index()
         )
@@ -761,7 +782,12 @@ def bk_histo_seg(doc,
     doc.add_root(column(select, row(*datepickers), p))
 
 
-def bk_bubbles(doc, data=None, filters=None):
+def bk_bubbles(
+    doc,
+    data=None,
+    filters=None,
+    plot_analysis_axes=None,
+):
     max_size = 50
     # line_width = 2.5
     plot_indicators = ['brutrevenue', 'margin', 'weight', 'linecount']
@@ -775,7 +801,8 @@ def bk_bubbles(doc, data=None, filters=None):
     for indicator in plot_indicators + composite_indicators:
         if indicator + '_clt_zscore' in data.columns:
             select_indicators.append(indicator + '_clt_zscore')
-    plot_analysis_axes = ['seg3', 'origin2']
+    if not plot_analysis_axes:
+        plot_analysis_axes = ['seg3', 'origin2']
     hover_fields = [
         'margin',
         'brutrevenue',
@@ -1949,7 +1976,7 @@ class WebProgressShow(param.Parameterized):
         self.dfs['orders'] = self.dfs['orders'].reset_index()
         self.dfs['orders'].date = self.dfs['orders'].date.dt.date
         self.dfs['clt'] = pd.read_pickle(clt_path)
-        self.origins = self.dfs['orders'].origin2.unique()
+        self.origins = self.dfs['orders']['origin2'].unique()
         self.compute_period_df()
 
         # Refactoring needed here!
