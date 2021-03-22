@@ -88,6 +88,26 @@ libs = {
     '1ALO': '1ALO - PassionFroid Est',
     '1LRO': '1LRO - PassionFroid Languedoc-Roussillon',
     '1SOU': '1SOU - PassionFroid Sud-Ouest',
+    '1RAA': '1RAA - PassionFroid Rhône-Alpes Auvergne',
+    '2RAA': '2RAA - EpiSaveurs Rhône-Alpes Auvergne',
+    '1PAC': "1PAC - PassionFroid Provence-Alpes Côte d'Azur",
+    '1PSU': '1PSU - PassionFroid Ile de France Sud',
+    '1CAP': "1CAP - PassionFroid Centrale d'Achats",
+    '1CTR': '1CTR - PassionFroid Centre',
+    '2CTR': '2CTR - EpiSaveurs Centre',
+    '1BFC': '1BFC - PassionFroid Bourgogne Franche-Comté',
+    '1OUE': '1OUE - PassionFroid Ouest',
+    '2EST': '2EST - EpiSaveurs Est',
+    '2NOR': '2NOR - EpiSaveurs Nord',
+    '2IDF': '2IDF - EpiSaveurs Ile de France',
+    '1NCH': '1NCH - PassionFroid Nord Champagne',
+    '1LXF': '1LXF - PassionFroid LuxFrais',
+    '2SES': '2SES - EpiSaveurs Sud-Est',
+    '1PNO': '1PNO - PassionFroid Ile de France Nord',
+    '2MPY': '2MPY - EpiSaveurs Midi-Pyrénées',
+    '2SOU': '2SOU - EpiSaveurs Aquitaine',
+    '1EXP': '1EXP - PassionFroid Ile de France Export',
+    '2CAE': "2CAE - EpiSaveurs Centrale d'achats",
     'seg1': 'Segmentation niveau 1',
     'seg2': 'Segmentation niveau 2',
     'seg3': 'Segmentation niveau 3',
@@ -98,7 +118,34 @@ libs = {
     'seg4_lib': 'Segmentation niveau 4',
 }
 
-suc_libs_inv = {libs[k]: k for k in ['1ALO', '1LRO', '1SOU', '2BRE']}
+suc_libs_inv = {
+    libs[k]: k for k in [
+        '1RAA',
+        '2RAA',
+        '1PAC',
+        '1PSU',
+        '1LRO',
+        '1CAP',
+        '1CTR',
+        '2CTR',
+        '1BFC',
+        '1OUE',
+        '2EST',
+        '2NOR',
+        '1ALO',
+        '2IDF',
+        '1NCH',
+        '1LXF',
+        '2SES',
+        '1PNO',
+        '2BRE',
+        '2MPY',
+        '1SOU',
+        '2SOU',
+        '1EXP',
+        '2CAE',
+    ]
+}
 
 formats = {
     'weight': '{:.2f} kg',
@@ -155,7 +202,7 @@ colormaps = {
         'VR': mcolorpalette[1],
         'WEB': mcolorpalette[2],
         'EDI': mcolorpalette[3],
-    },    
+    },
 }
 
 labeled_bins = namedtuple('labeled_bins', ['labels', 'bin_limits'])
@@ -353,16 +400,22 @@ def compute_distribution(data=None,
     lev_order = list(range(lev_count))
     lev_order = lev_order[-1:] + lev_order[:-1]
 
-    stats = (data[indicators].describe(percentiles=[1 - percentile_selection,
-                                                    .25,
-                                                    .50,
-                                                    .75,
-                                                    percentile_selection])
-                             .T
-                             .unstack(0)
-                             .reorder_levels(lev_order, axis=1)
-                             .sort_index(axis=1)
-             )
+    stats = (
+        data[indicators]
+        .describe(
+            percentiles=[
+                1 - percentile_selection,
+                .25,
+                .50,
+                .75,
+                percentile_selection
+            ]
+        )
+        .T
+        .unstack(0)
+        .reorder_levels(lev_order, axis=1)
+        .sort_index(axis=1)
+    )
 
     # definitions:
     # stats.iloc[4] =  1% (example, 1 - percentile selection)
@@ -472,23 +525,25 @@ def pretty_means(data=None,
     display(formatted)
 
 
-def plot_distrib(data=None,
-                 filter=None,
-                 indicators=None,
-                 ncols=1,
-                 x=None,
-                 order=None,
-                 hue=None,
-                 hue_order=None,
-                 kind='violin',
-                 percentile_selection=.99,
-                 IQR_factor_selection=3.,
-                 IQR_factor_plot=None,
-                 show_means=False,
-                 plot_kwargs=None,
-                 translate=True,
-                 fontsizes_kwargs=None,
-                 ):
+def plot_distrib(
+    data=None,
+    filter=None,
+    indicators=None,
+    ncols=1,
+    x=None,
+    order=None,
+    hue=None,
+    hue_order=None,
+    kind='violin',
+    percentile_selection=.99,
+    IQR_factor_selection=3.,
+    IQR_factor_plot=None,
+    show_means=False,
+    plot_kwargs=None,
+    translate=True,
+    fontsizes_kwargs=None,
+    debug=False,
+):
     '''
     Function that plot the distribution of some indicators (boxplot or violin)
 
@@ -512,9 +567,12 @@ def plot_distrib(data=None,
     if x is not None:
         data[x] = data[x].astype(pd.CategoricalDtype(order, ordered=True))
     if hue is not None:
-        data[hue] = data[hue].astype(pd.CategoricalDtype(hue_order,
-                                                         ordered=True)
-                                     )
+        data[hue] = data[hue].astype(
+            pd.CategoricalDtype(
+                hue_order,
+                ordered=True,
+            )
+        )
 
     # compute means **before** filtering extreme data points
     if show_means:
@@ -543,14 +601,17 @@ def plot_distrib(data=None,
         means = means.set_index(groupers)
 
     # compute the distribution for further use
-    stats = compute_distribution(data=data,
-                                 indicators=indicators,
-                                 x=x,
-                                 hue=hue,
-                                 percentile_selection=percentile_selection,
-                                 IQR_factor_selection=IQR_factor_selection,
-                                 IQR_factor_plot=IQR_factor_plot,
-                                 )
+    if debug:
+        display(data)
+    stats = compute_distribution(
+        data=data,
+        indicators=indicators,
+        x=x,
+        hue=hue,
+        percentile_selection=percentile_selection,
+        IQR_factor_selection=IQR_factor_selection,
+        IQR_factor_plot=IQR_factor_plot,
+    )
 
     # if plot filter is set up, then compute it
     agg_dict = dict()
@@ -787,6 +848,7 @@ def bk_bubbles(
     data=None,
     filters=None,
     plot_analysis_axes=None,
+    debug=False,
 ):
     max_size = 50
     # line_width = 2.5
@@ -965,7 +1027,9 @@ def bk_bubbles(
     ]
     filter_widgets = column(select_filters, row(*datepickers))
 
-    def select_data():
+    def select_data(
+        debug=False,
+    ):
         # aggregate data
         groupers = [select_bubble.value]
         if select_line.value != 'None':
@@ -1042,6 +1106,8 @@ def bk_bubbles(
                 to_plot[axis + '_c'] = to_plot[axis].map(colors)
             except KeyError:
                 pass
+        if debug:
+            display(to_plot)
         return(to_plot)
 
     source_cols = dict(
@@ -1063,7 +1129,7 @@ def bk_bubbles(
         color=[],
         line_lib=[],
     ))
-    to_plot = select_data()
+    to_plot = select_data(debug=debug)
     # with pd.option_context('display.max_columns', None):
     #     display(to_plot)
 
@@ -1120,7 +1186,7 @@ def bk_bubbles(
 
     def update_dataframe():
         global to_plot
-        to_plot = select_data()
+        to_plot = select_data(debug=debug)
         update_CDS()
 
     p = figure(plot_height=500, plot_width=800)
@@ -1963,8 +2029,10 @@ class WebProgressShow(param.Parameterized):
         self,
         orders_path=None,
         clt_path=None,
+        filters_include=None,
     ):
         super().__init__()
+        self.filters_include = filters_include
         self.group_names = {
             (True, True): 'Fidèles',
             (True, False): 'Abandonneurs',
@@ -1973,8 +2041,29 @@ class WebProgressShow(param.Parameterized):
         }
         self.dfs = dict()
         self.dfs['orders'] = pd.read_pickle(orders_path)
+        if self.filters_include:
+            idx_init = self.dfs['orders'].index.names
+            self.dfs['orders'] = self.dfs['orders'].reset_index()
+            for field, values in self.filters_include.items():
+                try:
+                    self.dfs['orders'] = (
+                        self.dfs['orders'].loc[
+                            lambda x: x[field].isin(values)
+                        ]
+                    )
+                except KeyError:
+                    print('Something is wrong with filters')
+                    raise
+            self.dfs['orders'] = self.dfs['orders'].set_index(idx_init)
+        # rename main_origin column as origin2 if necessary
+        if 'origin2' not in self.dfs['orders'].columns:
+            self.dfs['orders'] = (
+                self.dfs['orders']
+                .rename({'main_origin': 'origin2'}, axis=1)
+            )
         self.dfs['orders'] = self.dfs['orders'].reset_index()
         self.dfs['orders'].date = self.dfs['orders'].date.dt.date
+
         self.dfs['clt'] = pd.read_pickle(clt_path)
         self.origins = self.dfs['orders']['origin2'].unique()
         self.compute_period_df()
@@ -1990,9 +2079,15 @@ class WebProgressShow(param.Parameterized):
             .groupby(['orgacom', 'origin2', 'date'], observed=True)
             .sum()
         )
+
+        # compute list of orgacoms in data
+        # to be refactored: how can I update orgacom dropdown list during
+        # __init__?
         self.ocs = (
-            self.dfs['orgacom_date'].index.get_level_values('orgacom').unique()
+            self.dfs['orders']['orgacom'].unique()
         )
+        self.param.orgacom.objects = list(self.ocs)
+        # self.orgacom = self.ocs[0]
 
     def curve_indicator(
         self,
@@ -2012,7 +2107,7 @@ class WebProgressShow(param.Parameterized):
                     kdims=('date', 'La Date'),
                     vdims=hv.Dimension(indicator, label=lib(indicator)),
                 ).opts(color=colormaps['origin2'][origin])
-                for origin in self.origins
+                for origin in df.index.get_level_values(0).unique()
             },
             kdims=('origin2', 'Canal de commande')
         )
@@ -2565,11 +2660,16 @@ class WebProgressShow(param.Parameterized):
         self.venn_bokeh_pane = pn.pane.Bokeh(self.venn_object.f, height=320)
 
 
-def webprogress_dashboard():
+def webprogress_dashboard(
+    orders_path=persist_path / 'orders.pkl',
+    clt_path=persist_path / 'clt.pkl',
+    **kwargs,
+):
 
     webprogress = WebProgressShow(
-        orders_path=persist_path / 'orders.pkl',
-        clt_path=persist_path / 'clt.pkl',
+        orders_path=orders_path,
+        clt_path=clt_path,
+        **kwargs,
     )
 
     parameters_width = 300
@@ -2671,7 +2771,7 @@ def get_angles_from_lengths(r1, r2, d):
         alpha_1 = acos((d ** 2 + r1 ** 2 - r2 ** 2) / (2 * d * r1))
         alpha_2 = acos((d ** 2 + r2 ** 2 - r1 ** 2) / (2 * d * r2))
         return(alpha_1, alpha_2)
-    except ValueError:
+    except (ValueError, ZeroDivisionError):
         return(0., 0.)
 
 
@@ -2746,11 +2846,13 @@ class VennDiagram(object):
         initial_pop1=None,
         initial_pop2=None,
         initial_common=None,
+        debug=False,
     ):
         self.colors = colors
         self.labels = labels
         self.labels2 = labels2
         self.fontsize = fontsize
+        self.debug = debug
 
         self.f = figure(match_aspect=True, aspect_scale=1)
 
@@ -2896,6 +2998,15 @@ class VennDiagram(object):
     def update_CDS(self, pop1, pop2, common):
         # compute radii and distance
         self.compute_values(pop1, pop2, common)
+        if self.debug:
+            print(
+                f'pop1: {self.pop1}\n'
+                f'pop2: {self.pop2}\n'
+                f'common: {self.common}\n'
+                f'r1: {self.r1}\n'
+                f'r2: {self.r2}\n'
+                f'distance: {self.distance}\n'
+            )
 
         # main circles datasource
         self.circle_source.data = dict(
@@ -3423,7 +3534,12 @@ periods = {
 class ComparativeWebprogress(param.Parameterized):
 
     orgacom = param.ObjectSelector(
-        objects=suc_libs_inv,
+        objects={
+            **suc_libs_inv,
+            **{
+                'Toutes': None,
+            }
+        },
         default='1ALO',
         label='Succursale',
     )
@@ -3448,11 +3564,15 @@ class ComparativeWebprogress(param.Parameterized):
     def __init__(
         self,
         periods=periods,
+        orders_path=persist_path / 'orders.pkl',
+        clt_path=persist_path / 'clt.pkl',
+        **kwargs,
     ):
         super().__init__()
         self.webprogress = WebProgressShow(
-            orders_path=persist_path / 'orders.pkl',
-            clt_path=persist_path / 'clt.pkl',
+            orders_path=orders_path,
+            clt_path=clt_path,
+            **kwargs,
         )
         self.periods = periods
         self.init_grid_df()
@@ -3569,6 +3689,75 @@ class ComparativeWebprogress(param.Parameterized):
         agg_formatted.loc[idx[:, :, 'Comparaison'], ('size', '')] = None
         self.agg_formatted = agg_formatted
 
+        oc_agg_formatted = (
+            self.grid_df.loc[~pd.isna(self.grid_df.seg3_l)]
+            .groupby([
+                # 'orgacom',
+                'seg3_l',
+                'period_key',
+                'group',
+                'period',
+                'size',
+            ])
+            .sum()
+            .reset_index('size')
+            .assign(
+                total_size=lambda x: x.groupby(
+                    [
+                        # 'orgacom',
+                        'seg3_l',
+                        'group',
+                        'period',
+                    ])['size'].transform('sum'),
+                **{ind + suf:
+                    (lambda x, indic=ind+suf:
+                        (x[indic] * x['size'] / x['total_size']))
+                    for ind in [
+                        'margin',
+                        'brutrevenue',
+                        'weight',
+                        'linecount',
+                        'ordercount'
+                    ]
+                    for suf in ['', '_perbusday']}
+                    )
+            .drop('total_size', axis=1)
+            .groupby([
+                # 'orgacom',
+                'seg3_l',
+                'group',
+                'period'
+            ])
+            .sum()
+            .set_index('size', append=True)
+            .assign(
+                margin_perkg=lambda x: x.margin / x.weight,
+                margin_percent=lambda x: x.margin / x.brutrevenue,
+                PMVK=lambda x: x.brutrevenue / x.weight,
+            )
+            .unstack('period')
+            .swaplevel(axis=1).sort_index(axis=1)
+            .pipe(ComparativeWebprogress.compute_evol)
+            .swaplevel(axis=1).sort_index(axis=1)
+            .reset_index('size')
+            .reorder_levels([
+                'group',
+                # 'orgacom',
+                'seg3_l'
+            ])
+            .sort_index()
+            .pipe(ComparativeWebprogress.compute_delta)
+            .reorder_levels([
+                # 'orgacom',
+                'seg3_l',
+                'group'
+            ])
+            .sort_index()
+            .pipe(ComparativeWebprogress.reorder_cols)
+        )
+        oc_agg_formatted.loc[idx[:, 'Comparaison'], ('size', '')] = None
+        self.oc_agg_formatted = oc_agg_formatted
+
     @staticmethod
     def format_number(number):
         if float(number) > 0:
@@ -3663,17 +3852,24 @@ class ComparativeWebprogress(param.Parameterized):
             data = (
                 self.formatted
                 .loc[idx[period_key, orgacom, seg3_l, groups_of_interest], :]
-                .droplevel(list(range(3)))
+                # .droplevel(list(range(3)))
             )
         else:
-            data = (
-                self.agg_formatted
-                .loc[idx[orgacom, seg3_l, groups_of_interest], :]
-                .droplevel(list(range(2)))
-            )
+            if orgacom:
+                data = (
+                    self.agg_formatted
+                    .loc[idx[orgacom, seg3_l, groups_of_interest], :]
+                    # .droplevel(list(range(2)))
+                )
+            else:
+                data = (
+                    self.oc_agg_formatted
+                    .loc[idx[seg3_l, groups_of_interest], :]
+                    # .droplevel(list(range(2)))
+                )
         html = (
             data
-            .reindex(groups_of_interest)
+            .droplevel(data.index.names[:-1])
             .to_html(
                 header=True,
                 index_names=False,
@@ -3712,6 +3908,7 @@ class ComparativeWebprogress(param.Parameterized):
             .replace('<th></th>', '<th rowspan="2"></th>')
             .replace('<th>size</th>', '<th rowspan="2">size</th>')
             .replace('nan', '-')
+            .replace('NaN', '-')
         )
         html = ComparativeWebprogress.dict_replace(html, dict_replace=dict_rep)
         return(html)
@@ -3760,6 +3957,8 @@ class ComparativeWebprogress(param.Parameterized):
         )
         if not period_key:
             hv_ds = hv_ds.reduce(period_key=np.mean)
+        if not orgacom:
+            hv_ds = hv_ds.reduce(orgacom=np.mean)
         bar = hv_ds.to(
             hv.Bars,
             kdims=['period', 'origin2'],
