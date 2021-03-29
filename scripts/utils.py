@@ -3533,15 +3533,39 @@ periods = {
 
 class ComparativeWebprogress(param.Parameterized):
 
-    orgacom = param.ObjectSelector(
+    # orgacom = param.ObjectSelector(
+    #     objects={
+    #         **suc_libs_inv,
+    #         **{
+    #             'Toutes': None,
+    #         }
+    #     },
+    #     default='1ALO',
+    #     label='Succursale',
+    # )
+
+    orgacom = param.ListSelector(
+        default=['1ALO'],
         objects={
-            **suc_libs_inv,
-            **{
-                'Toutes': None,
-            }
+            k: suc_libs_inv[k]
+            for k in sorted(suc_libs_inv.keys())
         },
-        default='1ALO',
         label='Succursale',
+    )
+
+    PF_button = param.Action(
+        lambda x: x.sel_PF(),
+        label='PassionFroid',
+    )
+
+    ES_button = param.Action(
+        lambda x: x.sel_ES(),
+        label='EpiSaveurs',
+    )
+
+    DEL_button = param.Action(
+        lambda x: x.sel_DEL(),
+        label='Effacer',
     )
 
     seg3_l = param.ObjectSelector(
@@ -3555,10 +3579,26 @@ class ComparativeWebprogress(param.Parameterized):
         label='Segment 3',
     )
 
-    period_key = param.ObjectSelector(
-        objects=list(periods.keys()) + [None],
-        default='6jan_fev',
+    # period_key = param.ObjectSelector(
+    #     objects=list(periods.keys()) + [None],
+    #     default='6jan_fev',
+    #     label='Périodes à comparer',
+    # )
+
+    period_key = param.ListSelector(
+        objects=list(periods.keys()),
+        default=['6jan_fev'],
         label='Périodes à comparer',
+    )
+
+    period_all_button = param.Action(
+        lambda x: x.sel_period('All'),
+        label='Toutes',
+    )
+
+    period_clear_button = param.Action(
+        lambda x: x.sel_period('None'),
+        label='Effacer',
     )
 
     def __init__(
@@ -3568,16 +3608,109 @@ class ComparativeWebprogress(param.Parameterized):
         clt_path=persist_path / 'clt.pkl',
         **kwargs,
     ):
+        print('Initialisation called')
         super().__init__()
         self.webprogress = WebProgressShow(
             orders_path=orders_path,
             clt_path=clt_path,
             **kwargs,
         )
+        self.data_structure = {
+            'population': [
+                'orgacom',
+                'seg3',
+                'seg3_l',
+                'group',
+                'period_key',
+            ],
+            'pop_size': 'size',
+            'observation': [
+                'period',
+                'origin2',
+            ]
+        }
+        self.restitutions = {
+            'bars': [
+                'group',
+                'period',
+                'origin2',
+            ],
+            'table': [
+                'group',
+                'period',
+            ],
+        }
+        self.accumulation_indicators = [
+            'margin',
+            'brutrevenue',
+            'weight',
+            'linecount',
+            'ordercount',
+            'margin_perbusday',
+            'brutrevenue_perbusday',
+            'weight_perbusday',
+            'linecount_perbusday',
+            'ordercount_perbusday',
+        ]
+        self.table_indicators = [
+            'size',
+            'weight_perbusday',
+            'brutrevenue_perbusday',
+            'margin_perbusday',
+            'PMVK',
+            'marginperkg',
+            'marginpercent',
+            'linecount_perbusday',
+            'lineperorder',
+        ]
+        self.dimension_dict = {
+            'weight_perbusday': {'label': 'Tonnage', 'unit': 'kg/j.o.'},
+            'margin_perbusday': {'label': 'Marge', 'unit': '€/j.o.'},
+            'brutrevenue_perbusday': {'label': 'CA brut', 'unit': '€/j.o.'},
+            'linecount_perbusday': {'label': 'Nb lignes', 'unit': '/j.o.'},
+        }
+        self.composite_indicators_dict = composite_indicators_dict
         self.periods = periods
         self.init_grid_df()
-        self.init_formatted()
+        # self.init_formatted()
+        self.update_from_selection()
         # self.update_bar_layout()  # Not required anymore...
+
+    # @param.depends('PF_button', watch=True)
+    def sel_PF(self):
+        self.sel_ocs(criterion='PPF')
+
+    # @param.depends('ES_button', watch=True)
+    def sel_ES(self):
+        self.sel_ocs(criterion='PES')
+
+    # @param.depends('DEL_button', watch=True)
+    def sel_DEL(self):
+        self.sel_ocs(criterion='DEL')
+
+    def sel_period(
+        self,
+        period=None
+    ):
+        if period == 'All':
+            self.period_key = self.param.period_key.objects
+        elif period == 'None':
+            self.period_key = []
+
+    def sel_ocs(
+        self,
+        criterion=None,
+    ):
+        if criterion == 'PPF':
+            self.orgacom = [
+                oc for oc in suc_libs_inv.values() if oc[0] == '1'
+            ]
+        elif criterion == 'PES':
+            self.orgacom = [
+                oc for oc in suc_libs_inv.values() if oc[0] == '2'
+            ]
+        elif criterion == 'DEL':
+            self.orgacom = []
 
     def init_grid_df(self):
         grid_dfs = dict()
@@ -3600,6 +3733,7 @@ class ComparativeWebprogress(param.Parameterized):
         self.grid_df = grid_df
 
     def init_formatted(self):
+        # DEPRECATED!
         formatted = (
             self.grid_df
             .loc[~pd.isna(self.grid_df.seg3_l)]
@@ -3769,12 +3903,77 @@ class ComparativeWebprogress(param.Parameterized):
         return(f'<b style={style}>{number:.2%}</b>')
 
     @staticmethod
+    def compute_diff(
+        df,
+        index=None,
+        diff_col=None,
+        ref_val=None,
+        new_val=None,
+        target_val=None,
+        append=True,
+        ratio=False,
+    ):
+        # takes a df without index as input.
+        # the values in the index should be unique (must they?)
+        # if append == True, then the initial df with the new rows is provided
+        # if ratio == True, then the comparison is divided by the reference
+        # value (e.g. to compute a percentage evolution)
+        if diff_col not in index:
+            raise ValueError(f'{diff_col} should be in the index list.')
+        if (
+            new_val not in df[diff_col].values or
+            ref_val not in df[diff_col].values
+        ):
+            if append:
+                return(df)
+            else:
+                return(pd.DataFrame(index=df.index, columns=df.columns))
+        col_indexed = (
+            df
+            .loc[df[diff_col].isin([ref_val, new_val])]
+            .set_index(index)
+            .unstack(diff_col, fill_value=0)
+            .swaplevel(i=0, j=diff_col, axis=1)
+            .sort_index(axis=1)
+        )
+        to_append = (
+            col_indexed.loc[:, new_val] - col_indexed.loc[:, ref_val]
+        )
+        if ratio:
+            to_append = to_append.div(col_indexed.loc[:, ref_val], axis=0)
+        to_append = pd.concat(
+            [to_append],
+            axis=1,
+            keys=[target_val],
+            names=[diff_col]
+        ).stack(diff_col).reset_index(index)
+        if not append:
+            return(to_append)
+        else:
+            return(pd.concat([df, to_append], axis=0))
+
+    @staticmethod
+    def compute_delta(
+        df,
+        ref_idx='Ignoreurs',
+        new_idx='Adopteurs',
+        key_idx='Comparaison',
+    ):
+        # DEPRECATED! SHOULD USE compute_diff instead
+        new = pd.concat(
+            [df.loc[idx[new_idx], :] - df.loc[idx[ref_idx], :]],
+            keys=[key_idx],
+        )
+        return(pd.concat([df, new]))
+
+    @staticmethod
     def compute_evol(
         df,
         ref_col='P1',
         new_col='P2',
         key_idx='evo',
     ):
+        # TO DEPRECATE! Use compute_diff instead
         df_evol_ratio = (
             (df.loc[:, idx[new_col]] - df.loc[:, idx[ref_col]])
             / df.loc[:, idx[ref_col]]
@@ -3792,19 +3991,6 @@ class ComparativeWebprogress(param.Parameterized):
         )
 
     @staticmethod
-    def compute_delta(
-        df,
-        ref_idx='Ignoreurs',
-        new_idx='Adopteurs',
-        key_idx='Comparaison',
-    ):
-        new = pd.concat(
-            [df.loc[idx[new_idx], :] - df.loc[idx[ref_idx], :]],
-            keys=[key_idx],
-        )
-        return(pd.concat([df, new]))
-
-    @staticmethod
     def reorder_cols(
         df,
         lev1_order=[
@@ -3817,6 +4003,7 @@ class ComparativeWebprogress(param.Parameterized):
         ],
         lev2_order=['P1', 'P2', 'evo'],
     ):
+        # DEPRECATED!
         return(
             df.reindex(
                 [('size', '')] + list(product(lev1_order, lev2_order)),
@@ -3830,8 +4017,10 @@ class ComparativeWebprogress(param.Parameterized):
         'brutrevenue_perbusday': 'CA brut (€/j.o.)',
         'margin_perbusday': 'Marge (€/j.o.)',
         'PMVK': 'PMVK (€/kg)',
-        'margin_perkg': 'Marge kg (€/kg)',
-        'margin_percent': 'Marge % (%)',
+        'marginperkg': 'Marge kg (€/kg)',
+        'marginpercent': 'Marge % (%)',
+        'linecount_perbusday': 'Nb lignes (/j.o.)',
+        'lineperorder': 'Nb lignes/com',
     }
 
     @staticmethod
@@ -3842,12 +4031,85 @@ class ComparativeWebprogress(param.Parameterized):
 
     def table(
         self,
+        dict_rep=dict_rep,
+        indicators=None,
+    ):
+        if not indicators:
+            indicators = self.table_indicators
+        data = (
+            self.aggregations['table']
+            .set_index(self.restitutions['table'])
+            .unstack('period')
+        )
+        data = self._merge_with_scaling_factor_df(
+            df=data,
+            sfactor_df=self.sizes,
+            df_keys=self.restitutions['table'],
+            sfactor_keys=self.data_structure['population'],
+            sfactor_name='size',
+        ).set_index('group')
+        try:
+            data = data.loc[
+                ['Adopteurs', 'Ignoreurs', 'Comparaison'],
+                indicators,
+            ]
+        except KeyError:
+            return(None)
+
+        html = (
+            data
+            .to_html(
+                header=True,
+                index_names=False,
+                index=True,
+                escape=False,
+                formatters={
+                    **{('size', ''): lambda x: f'{x:.0f}'},
+                    **{
+                        (indicator, period): lambda x: f'{x:.2f}' for indicator
+                        in data.columns.get_level_values(0)
+                        for period in ('P1', 'P2')
+                    },
+                    **{
+                        ('marginpercent', period): lambda x: f'{x:.2%}'
+                        for period in ('P1', 'P2')
+                    },
+                    **{
+                        (indicator, 'evo'):
+                            ComparativeWebprogress.format_number for indicator
+                            in data.columns.get_level_values(0)
+                    },
+                },
+            )
+        )
+
+        html += "<style>\n"
+        html += "th {text-align: center; horizontal-align: center; "
+        html += "padding-left: 3px; padding-right: 3px; font-size: 1.em}\n"
+        html += "td {text-align: center;padding-left: 3px; padding-right: 3px;"
+        html += " font-size: 1.em;}\n"
+        html += "</style>"
+        html = (
+            html
+            .replace(' class="dataframe"', '')
+            .replace('      <th></th>\n      <th></th>\n', '')
+            .replace('<th></th>', '<th rowspan="2"></th>')
+            .replace('<th>size</th>', '<th rowspan="2">size</th>')
+            .replace('nan', '-')
+            .replace('NaN', '-')
+        )
+        html = ComparativeWebprogress.dict_replace(html, dict_replace=dict_rep)
+        return(html)
+
+    def table_old(
+        self,
         period_key=None,
         orgacom=None,
         seg3_l=None,
         groups_of_interest=['Adopteurs', 'Ignoreurs', 'Comparaison'],
         dict_rep=dict_rep,
     ):
+        # DEPRECATED !
         if period_key:
             data = (
                 self.formatted
@@ -3916,6 +4178,45 @@ class ComparativeWebprogress(param.Parameterized):
     def single_bar(
         self,
         indicator=None,
+        group=None,
+        hv_group=None,
+        hv_label=None,
+    ):
+        hv_group = hv_group if hv_group else 'Bars'
+        hv_label = hv_label if hv_label else ''
+
+        data = self.aggregations['bars']
+        data = data.loc[
+            (data['group'] == group) &
+            (data['period'].isin(['P1', 'P2'])),
+            ['period', 'origin2', indicator]
+        ]
+
+        bar = hv.Bars(
+            data,
+            kdims=['period', 'origin2'],
+            vdims=hv.Dimension(indicator, **self.dimension_dict[indicator]),
+            # dynamic=True,
+            group=hv_group,
+            label=hv_label,
+        ).opts(
+            stacked=True,
+            cmap=colormaps['origin2'],
+            show_legend=False,
+            width=120,
+            axiswise=True,
+            framewise=True,
+            bar_width=.5,
+            title='',
+            xlabel='',
+            height=250,
+            toolbar=None,
+        )
+        return(bar)
+
+    def single_bar_old(
+        self,
+        indicator=None,
         orgacom=None,
         seg3_l=None,
         group=None,
@@ -3923,6 +4224,7 @@ class ComparativeWebprogress(param.Parameterized):
         hv_group=None,
         hv_label=None,
     ):
+        # DEPRECATED
         indicator_dict = {
             'weight_perbusday': {'label': 'Tonnage', 'unit': 'kg/j.o.'},
             'margin_perbusday': {'label': 'Marge', 'unit': '€/j.o.'},
@@ -4004,18 +4306,18 @@ class ComparativeWebprogress(param.Parameterized):
     ):
         bar1 = self.single_bar(
             indicator=indicator,
-            orgacom=orgacom,
-            seg3_l=seg3_l,
-            period_key=period_key,
+            # orgacom=orgacom,
+            # seg3_l=seg3_l,
+            # period_key=period_key,
             group=groups[0],
             hv_group=indicator,
             hv_label='Target',
         )
         bar2 = self.single_bar(
             indicator=indicator,
-            orgacom=orgacom,
-            seg3_l=seg3_l,
-            period_key=period_key,
+            # orgacom=orgacom,
+            # seg3_l=seg3_l,
+            # period_key=period_key,
             group=groups[1],
             hv_group=indicator,
             hv_label='Reference',
@@ -4023,6 +4325,223 @@ class ComparativeWebprogress(param.Parameterized):
         return((bar1 + bar2).opts(toolbar=None))
 
     @param.depends('orgacom', 'seg3_l', 'period_key', watch=True)
+    def update_from_selection(self):
+        self.init_source(individual_input=True)
+        self.compute_sizes()
+        self.compute_aggregations()
+        self.compute_individual()
+        self.compute_composite()
+        self.compute_evolution()
+        self.compute_comparison()
+
+    def init_source(
+        self,
+        individual_input=False,
+    ):
+        self.source = self.grid_df.loc[
+            self.grid_df['orgacom'].isin(self.orgacom) &
+            (self.grid_df['seg3_l'] == self.seg3_l) &
+            self.grid_df['period_key'].isin(self.period_key)
+        ].copy()
+        if individual_input:
+            # compute whole group total values if necessary
+            self.source[self.accumulation_indicators] = (
+                self.source[self.accumulation_indicators].mul(
+                    self.source[self.data_structure['pop_size']],
+                    axis=0,
+                )
+            )
+
+    def compute_sizes(
+        self,
+    ):
+        # an ugly patch, pop sizes should always be outside the main dataframe
+        data_structure = self.data_structure
+        self.sizes = (
+            self.source
+            .groupby(
+                data_structure['population'] + data_structure['observation'],
+                observed=True,
+                as_index=False,
+            )
+            [data_structure['pop_size']]
+            .sum()
+            .drop(data_structure['observation'], axis=1)
+            .drop_duplicates()
+        )
+
+    def compute_aggregations(self):
+        self.aggregations = dict()
+        for rest_name, rest_def in self.restitutions.items():
+            self.aggregations[rest_name] = ComparativeWebprogress.compute_agg(
+                df=self.source,
+                groupers=rest_def,
+                accumulation_indicators=self.accumulation_indicators,
+            )
+
+    @staticmethod
+    def compute_agg(
+        df=None,
+        groupers=None,
+        accumulation_indicators=None,
+    ):
+        df = (
+            df
+            .groupby(
+                groupers,
+                observed=True,
+                as_index=False)
+            [accumulation_indicators]
+            .sum()
+        )
+        return(df)
+
+    @staticmethod
+    def _merge_with_scaling_factor_df(
+        df=None,
+        sfactor_df=None,
+        df_keys=None,
+        sfactor_keys=None,
+        sfactor_name='size',
+        how='left',
+    ):
+        df_keys, sfactor_keys = set(df_keys), set(sfactor_keys)
+        intersect_keys = list(sfactor_keys.intersection(df_keys))
+        grouped_sizes = (
+            sfactor_df
+            .groupby(
+                intersect_keys,
+                observed=True,
+                as_index=False,
+            )
+            [sfactor_name]
+            .sum()
+        )
+        # realign columns level counts in case of multiindex
+        df, grouped_sizes = ComparativeWebprogress.align_index_levels(
+            df,
+            grouped_sizes,
+            axis=1,
+            fill_bottom=True,
+        )
+        return(df.merge(grouped_sizes, on=intersect_keys, how=how))
+
+    @staticmethod
+    def align_index_levels(
+        df,
+        other,
+        axis=0,
+        fill_bottom=True,
+    ):
+        # returns both df with index levels padded with '' so they have the
+        # same length
+        # use axis=1 to pad columns multiindex
+        # when fill_bottom is true the resulting multiindex will be filled
+        # on the last levels
+        # do not modify dataframes in place, returns copies
+        df, other = df.copy(), other.copy()
+        df_levs, other_levs = df.axes[axis].nlevels, other.axes[axis].nlevels
+        if df_levs > other_levs:
+            diff = df_levs - other_levs
+            other = ComparativeWebprogress.append_dummy_levels(
+                other,
+                lev_count=diff,
+                axis=axis,
+                fill_bottom=fill_bottom,
+            )
+        elif df_levs < other_levs:
+            diff = other_levs - df_levs
+            df = ComparativeWebprogress.append_dummy_levels(
+                df,
+                lev_count=diff,
+                axis=axis,
+                fill_bottom=fill_bottom,
+            )
+        return(df, other)
+
+    @staticmethod
+    def append_dummy_levels(
+        df,
+        lev_count=1,
+        axis=0,
+        fill_bottom=True,
+    ):
+        # appends dummy (empty) levels to the index of axis axis
+        # returns a copy
+        df = df.copy()
+        init_nlevs = df.axes[axis].nlevels
+        df = pd.concat(
+            {('', ) * lev_count: df},
+            names=[''] * lev_count,
+            axis=axis,
+        )
+        if fill_bottom:
+            full_list = list(range(df.axes[axis].nlevels))
+            new_order = full_list[-init_nlevs:] + full_list[:-init_nlevs]
+            df = df.reorder_levels(
+                new_order,
+                axis=axis,
+            )
+        return(df)
+
+    def compute_individual(self):
+        # scaling factor for population (sizes)
+        # heuristic is: you only keep in scaling factor table key fields that
+        # are in data table, groupby/sum, and merge with broadcast on data
+        # table
+        # not ideal, but replaces aggregations dataframes
+        for rest_name, rest_def in self.restitutions.items():
+            with_sizes = ComparativeWebprogress._merge_with_scaling_factor_df(
+                df=self.aggregations[rest_name],
+                sfactor_df=self.sizes,
+                df_keys=rest_def,
+                sfactor_keys=self.data_structure['population'],
+                sfactor_name='size',
+            )
+            individualed = (
+                with_sizes[self.accumulation_indicators]
+                .div(with_sizes['size'], axis=0)
+            )
+            # patch the values in the aggregations dataframe
+            self.aggregations[rest_name][self.accumulation_indicators] = (
+                individualed[self.accumulation_indicators]
+            )
+
+    def compute_composite(self):
+        # compute composite indicators from accumulation indicators
+        for indicator, definition in self.composite_indicators_dict.items():
+            for agg_name, agg_df in self.aggregations.items():
+                agg_df[indicator] = (
+                    agg_df[definition[0]] / agg_df[definition[1]]
+                )
+
+    def compute_evolution(self):
+        for agg_name, agg_df in self.aggregations.items():
+            self.aggregations[agg_name] = ComparativeWebprogress.compute_diff(
+                agg_df,
+                index=self.restitutions[agg_name],
+                diff_col='period',
+                ref_val='P1',
+                new_val='P2',
+                target_val='evo',
+                append=True,
+                ratio=True,
+            )
+
+    def compute_comparison(self):
+        for agg_name, agg_df in self.aggregations.items():
+            self.aggregations[agg_name] = ComparativeWebprogress.compute_diff(
+                agg_df,
+                index=self.restitutions[agg_name],
+                diff_col='group',
+                ref_val='Ignoreurs',
+                new_val='Adopteurs',
+                target_val='Comparaison',
+                append=True,
+                ratio=False,
+            )
+
+    # @param.depends('orgacom', 'seg3_l', 'period_key', watch=True)
     def update_bar_layout(
         self,
     ):
@@ -4042,7 +4561,7 @@ class ComparativeWebprogress(param.Parameterized):
         ]).opts(toolbar=None)
         self.layout = layout
 
-    @param.depends('orgacom', 'seg3_l', 'period_key')
+    # @param.depends('orgacom', 'seg3_l', 'period_key')
     def get_weight_barplot(self):
         # DEPRECATED! Is not useful anymore.
         return(self.get_pair_barplot(indicator='weight_perbusday'))
@@ -4057,6 +4576,33 @@ class ComparativeWebprogress(param.Parameterized):
 
     @param.depends('orgacom', 'seg3_l', 'period_key')
     def dashboard_title(self):
+        title = (
+            f'{self.orgacom_descriptor()} - {self.seg3_l}'
+            f' - {self.period_descriptor()}'
+        )
+        return(title)
+
+    def orgacom_descriptor(
+        self,
+    ):
+        if (
+            set(self.orgacom) ==
+            {oc for oc in suc_libs_inv.values() if oc[0] == '1'}
+        ):
+            return('Branche PassionFroid')
+        if (
+            set(self.orgacom) ==
+            {oc for oc in suc_libs_inv.values() if oc[0] == '2'}
+        ):
+            return('Branche EpiSaveurs')
+        if len(self.orgacom) == 1:
+            return(f'Succursale {self.orgacom[0]}')
+        else:
+            return('Multiples SV')
+
+    def period_descriptor(
+        self,
+    ):
         period_l = {
             '6jan_fev': 'Jan & Fev 2019/2020',
             '5nov_dec': 'Nov & Dec 2018/2019',
@@ -4064,10 +4610,13 @@ class ComparativeWebprogress(param.Parameterized):
             '3jui_aou': 'Juil & Aou 2018/2019',
             '2mai_jui': 'Mai & Juin 2018/2019',
             '1mar_avr': 'Mar & Avr 2018/2019',
-            None: 'Moyenne',
-        }[self.period_key]
-        title = f'Succurale {self.orgacom} - {self.seg3_l} - {period_l}'
-        return(title)
+        }
+        if len(self.period_key) == len(self.param.period_key.objects):
+            return('Toutes périodes')
+        elif len(self.period_key) == 1:
+            return(period_l[self.period_key[0]])
+        else:
+            return('Multiples périodes')
 
     def dashboard_3_plots(
         self,
@@ -4126,10 +4675,10 @@ class ComparativeWebprogress(param.Parameterized):
             ),
             pn.layout.VSpacer(background=bgcolor),
             pn.pane.HTML(self.table(
-                period_key=period_key,
-                orgacom=orgacom,
-                seg3_l=seg3_l,
-                groups_of_interest=groups + ['Comparaison']
+                # period_key=period_key,
+                # orgacom=orgacom,
+                # seg3_l=seg3_l,
+                # groups_of_interest=groups + ['Comparaison']
             ))
         )
         return(dashboard)
