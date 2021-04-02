@@ -746,6 +746,8 @@ def bk_histo_seg(
     filters=None,
     filters_exclude=None,
     plot_kwargs=None,
+    plot_kwargs_dict=None,
+    max_text_len=15,
 ):
     '''
     Bokeh server app that enables to draw stacked bar plot on segmentation
@@ -753,6 +755,17 @@ def bk_histo_seg(
 
     if plot_kwargs is None:
         plot_kwargs = dict()
+    if plot_kwargs_dict is None:
+        plot_kwargs_dict = dict()
+
+    # some default values for plot_kwargs_dict
+    plot_kwargs_dict = {
+        **{
+            ('xaxis', 'major_label_orientation'): 1,
+            ('yaxis', 'formatter'): NumeralTickFormatter(format='0'),
+        },
+        **plot_kwargs_dict
+    }
 
     # define controls
     # select: choose indicator from list
@@ -761,21 +774,27 @@ def bk_histo_seg(
         'CA brut (€)': 'brutrevenue',
         'Tonnage (kg)': 'weight',
     }
-    select = Select(title="Indicateur",
-                    options=list(indicator_map),
-                    value=list(indicator_map)[1])
+    select = Select(
+        title="Indicateur",
+        options=list(indicator_map),
+        value=list(indicator_map)[1]
+    )
     # datepickers : filter data on date
     min_date, max_date = date(2017, 7, 3), date(2020, 8, 30)
     min_def_date, max_def_date = date(2019, 1, 1), date(2019, 12, 31)
     datepickers = [
-        DatePicker(title='Date de début',
-                   value=min_def_date,
-                   min_date=min_date,
-                   max_date=max_date),
-        DatePicker(title='Date de fin',
-                   value=max_def_date,
-                   min_date=min_date,
-                   max_date=max_date),
+        DatePicker(
+            title='Date de début',
+            value=min_def_date,
+            min_date=min_date,
+            max_date=max_date
+        ),
+        DatePicker(
+            title='Date de fin',
+            value=max_def_date,
+            min_date=min_date,
+            max_date=max_date
+        ),
     ]
 
     controls = [select, *datepickers]
@@ -793,7 +812,10 @@ def bk_histo_seg(
               .reset_index()
         )
         for seg in segs:
-            temp[seg] = temp[seg].map(transco[seg])
+            truncated_transco = {
+                k: v[:max_text_len] for k, v in transco[seg].items()
+            }
+            temp[seg] = temp[seg].map(truncated_transco)
         temp = temp.set_index(segs + ['orgacom'])
         return(temp)
 
@@ -829,17 +851,24 @@ def bk_histo_seg(
         x_range=FactorRange(*list(df.index)),
         plot_width=900,
         **plot_kwargs,
-        )
-    p.vbar_stack(df.columns,
-                 x='_'.join(segs) + '_orgacom',
-                 source=source,
-                 width=.9,
-                 color=list(mcolor.TABLEAU_COLORS.values())[:len(df.columns)],
-                 legend_label=list(df.columns),
-                 )
-    p.xaxis.major_label_orientation = 1
-    p.yaxis.formatter = NumeralTickFormatter(format="0")
+    )
+    p.vbar_stack(
+        df.columns,
+        x='_'.join(segs) + '_orgacom',
+        source=source,
+        width=.9,
+        color=list(mcolor.TABLEAU_COLORS.values())[:len(df.columns)],
+        legend_label=list(df.columns),
+    )
 
+    def _unpack_plot_kwargs_dict(target, dict_):
+        for attr_list, val in dict_.items():
+            cur_target = target
+            for attr in attr_list[:-1]:
+                cur_target = cur_target.__getattribute__(attr)
+            cur_target.__setattr__(attr_list[-1], val)
+
+    _unpack_plot_kwargs_dict(p, plot_kwargs_dict)
     doc.add_root(column(select, row(*datepickers), p))
 
 
