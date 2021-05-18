@@ -295,13 +295,14 @@ def compute_zscores(df, grouper_fields, indicators, suffix='_clt_zscore'):
     return(df)
 
 
-def process_df(df,
-               orders_doctypes=['ZC10'],
-               avoirs_doctypes=['ZA01', 'ZA02'],
-               indicators=['margin', 'brutrevenue', 'weight'],
-               grouper_fields=['orgacom', 'date', 'client', 'material'],
-               debug=False,
-               ):
+def process_df(
+    df,
+    orders_doctypes=['ZC10'],
+    avoirs_doctypes=['ZA01', 'ZA02'],
+    indicators=['margin', 'brutrevenue', 'weight'],
+    grouper_fields=['orgacom', 'date', 'client', 'material'],
+    debug=False,
+):
     init_index = df.index.names
     init_cols = df.columns
     before_processing = df[indicators].sum()
@@ -359,11 +360,19 @@ def process_df(df,
     merged = (
         merged
         .drop(columns=['_merge', '_duplicated'])
-        .set_index(init_index)
+    )
+    try:
+        merged = (
+            merged
+            .set_index(init_index)
+        )
+    except KeyError:  # case initial index did not have name
+        pass
+    merged = (
+        merged
         [init_cols]  # reorder columns
         .sort_index()
     )
-    merged = merged
     df = merged
     del(merged)
     after_processing = df[indicators].sum()
@@ -1290,7 +1299,7 @@ def bk_bubbles(
         column(
             row(axes_widgets,
                 groups_widgets,
-                filter_widgets,
+                # filter_widgets, # filters not implemented yet.
                 sizing_mode='stretch_width'),
             p,
             )
@@ -2195,8 +2204,8 @@ class WebProgressShow(param.Parameterized):
             .sort_index()
         )
 
-        # we create the venn panel attributes here (depends on
-        # scope_orgacom_seg3 for initial values).
+        # we create the venn panel attributes here rather than in __init__
+        # (depends on scope_orgacom_seg3 for initial values).
         if not hasattr(self, 'venn_bokeh_pane'):
             self.create_venn_panel()
 
@@ -2651,26 +2660,26 @@ class WebProgressShow(param.Parameterized):
         common = data.loc['in_scope']
         self.venn_object.update_CDS(pop1, pop2, common)
 
-    @param.depends(
-        'orgacom',
-        'seg3',
-        'd1period1',
-        'd2period1',
-        'd1period2',
-        'd2period2',
-        watch=True,
-    )
-    def venn_with_filters(self):
-        # DEPRECATED! Now using a VennDiagram object (to enable linking of
-        # panel widgets and bokeh plot)
-        data = (
-            self.dfs['scope_orgacom_seg3']
-            .loc[idx[self.orgacom, self.seg3], :]
-        )
-        pop1 = data.loc['lost'] + data.loc['in_scope']
-        pop2 = data.loc['new'] + data.loc['in_scope']
-        common = data.loc['in_scope']
-        return(venn_diagram(pop1, pop2, common))
+    # @param.depends(
+    #     'orgacom',
+    #     'seg3',
+    #     'd1period1',
+    #     'd2period1',
+    #     'd1period2',
+    #     'd2period2',
+    #     watch=True,
+    # )
+    # def venn_with_filters(self):
+    #     # DEPRECATED! Now using a VennDiagram object (to enable linking of
+    #     # panel widgets and bokeh plot)
+    #     data = (
+    #         self.dfs['scope_orgacom_seg3']
+    #         .loc[idx[self.orgacom, self.seg3], :]
+    #     )
+    #     pop1 = data.loc['lost'] + data.loc['in_scope']
+    #     pop2 = data.loc['new'] + data.loc['in_scope']
+    #     common = data.loc['in_scope']
+    #     return(venn_diagram(pop1, pop2, common))
 
     def create_venn_panel(self):
         data = (
@@ -4462,12 +4471,12 @@ class ComparativeWebprogress(param.Parameterized):
         axis=0,
         fill_bottom=True,
     ):
-        # returns both df with index levels padded with '' so they have the
-        # same length
+        # returns both df with index levels padded with '' (empty string)
+        # so they have the same length
         # use axis=1 to pad columns multiindex
         # when fill_bottom is true the resulting multiindex will be filled
         # on the last levels
-        # do not modify dataframes in place, returns copies
+        # does not modify dataframes in place, returns copies
         df, other = df.copy(), other.copy()
         df_levs, other_levs = df.axes[axis].nlevels, other.axes[axis].nlevels
         if df_levs > other_levs:
@@ -4570,38 +4579,38 @@ class ComparativeWebprogress(param.Parameterized):
                 ratio=False,
             )
 
-    # @param.depends('orgacom', 'seg3_l', 'period_key', watch=True)
-    def update_bar_layout(
-        self,
-    ):
-        # DEPRECATED! Is not useful anymore.
-        layout = hv.Layout([
-            self.pair_barplot(
-                indicator=indicator,
-                orgacom=self.orgacom,
-                seg3_l=self.seg3_l,
-                groups=['Adopteurs', 'Ignoreurs'],
-                period_key=self.period_key,
-            ) for indicator in [
-                'weight_perbusday',
-                'brutrevenue_perbusday',
-                'margin_perbusday'
-            ]
-        ]).opts(toolbar=None)
-        self.layout = layout
+    # # @param.depends('orgacom', 'seg3_l', 'period_key', watch=True)
+    # def update_bar_layout(
+    #     self,
+    # ):
+    #     # DEPRECATED! Is not useful anymore.
+    #     layout = hv.Layout([
+    #         self.pair_barplot(
+    #             indicator=indicator,
+    #             orgacom=self.orgacom,
+    #             seg3_l=self.seg3_l,
+    #             groups=['Adopteurs', 'Ignoreurs'],
+    #             period_key=self.period_key,
+    #         ) for indicator in [
+    #             'weight_perbusday',
+    #             'brutrevenue_perbusday',
+    #             'margin_perbusday'
+    #         ]
+    #     ]).opts(toolbar=None)
+    #     self.layout = layout
 
-    # @param.depends('orgacom', 'seg3_l', 'period_key')
-    def get_weight_barplot(self):
-        # DEPRECATED! Is not useful anymore.
-        return(self.get_pair_barplot(indicator='weight_perbusday'))
+    # # @param.depends('orgacom', 'seg3_l', 'period_key')
+    # def get_weight_barplot(self):
+    #     # DEPRECATED! Is not useful anymore.
+    #     return(self.get_pair_barplot(indicator='weight_perbusday'))
 
-    def get_pair_barplot(
-        self,
-        indicator=None,
-    ):
-        # DEPRECATED! Is not useful anymore.
-        indicator = indicator.capitalize()
-        return(self.layout[indicator])
+    # def get_pair_barplot(
+    #     self,
+    #     indicator=None,
+    # ):
+    #     # DEPRECATED! Is not useful anymore.
+    #     indicator = indicator.capitalize()
+    #     return(self.layout[indicator])
 
     @param.depends('orgacom', 'seg3_l', 'period_key')
     def dashboard_title(self):
