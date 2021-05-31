@@ -78,6 +78,8 @@ libs = {
     'weight_perbusday': 'Tonnage (kg/j.o.)',
     'linecount_perbusday': 'Nombre de lignes (/j.o.)',
     'ordercount_perbusday': 'Nombre de commandes (/j.o.)',
+    'marches_publics_seg': 'Type marché (segmentation)',
+    'marches_publics_ddar': 'Type marché (hiérarchie DDAR)',
     'TV': 'Télévente',
     'VR': 'Vente route',
     'WEB': 'e-commerce',
@@ -237,7 +239,14 @@ for i in range(1, 7):
                .reset_index()
                .set_index('code')['designation']
     )
-
+transco['marches_publics_seg'] = {
+    True: "Marchés publics",
+    False: "Hors marchés publics",
+}
+transco['marches_publics_ddar'] = {
+    True: "Marchés publics",
+    False: "Hors marchés publics",
+}
 
 def seg_lib(code, level):
     '''
@@ -752,6 +761,7 @@ def bk_histo_seg(
     source_df=None,
     segs=None,
     stack_axis='origin2',
+    x_dimension='orgacom',
     filters=None,
     filters_exclude=None,
     plot_kwargs=None,
@@ -813,7 +823,7 @@ def bk_histo_seg(
 
     def compute_indicator(df, indicator):
         temp = (
-            df.groupby([stack_axis] + segs + ['orgacom'],
+            df.groupby([stack_axis] + segs + [x_dimension],
                        observed=True,)[indicator]
               .sum()
               .unstack(stack_axis, fill_value=0.)
@@ -825,7 +835,7 @@ def bk_histo_seg(
                 k: v[:max_text_len] for k, v in transco[seg].items()
             }
             temp[seg] = temp[seg].map(truncated_transco)
-        temp = temp.set_index(segs + ['orgacom'])
+        temp = temp.set_index(segs + [x_dimension])
         return(temp)
 
     def select_data():
@@ -863,7 +873,7 @@ def bk_histo_seg(
     )
     p.vbar_stack(
         df.columns,
-        x='_'.join(segs) + '_orgacom',
+        x='_'.join(segs + [x_dimension]),
         source=source,
         width=.9,
         color=list(mcolor.TABLEAU_COLORS.values())[:len(df.columns)],
