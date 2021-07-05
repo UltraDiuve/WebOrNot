@@ -767,6 +767,7 @@ def bk_histo_seg(
     plot_kwargs=None,
     plot_kwargs_dict=None,
     max_text_len=15,
+    range_padding=0.,
 ):
     '''
     Bokeh server app that enables to draw stacked bar plot on segmentation
@@ -776,6 +777,14 @@ def bk_histo_seg(
         plot_kwargs = dict()
     if plot_kwargs_dict is None:
         plot_kwargs_dict = dict()
+
+    # some default values for plot_kwargs
+    plot_kwargs = {
+        **{
+            'plot_width': 900,
+        },
+        **plot_kwargs
+    }
 
     # some default values for plot_kwargs_dict
     plot_kwargs_dict = {
@@ -867,8 +876,7 @@ def bk_histo_seg(
     source = ColumnDataSource(data=df)
 
     p = figure(
-        x_range=FactorRange(*list(df.index)),
-        plot_width=900,
+        x_range=FactorRange(*list(df.index), range_padding=range_padding),
         **plot_kwargs,
     )
     p.vbar_stack(
@@ -3369,7 +3377,7 @@ class MarginAnalyzer(param.Parameterized):
 
     def __init__(
         self,
-        orders_path=persist_path / 'orders.pkl',
+        orders_path=persist_path / 'small_orders.pkl',
         clt_path=persist_path / 'clt.pkl'
     ):
         super().__init__()
@@ -4672,6 +4680,7 @@ class ComparativeWebprogress(param.Parameterized):
             'weight_perbusday',
             'brutrevenue_perbusday',
             'margin_perbusday',
+            'linecount_perbusday',
         ],
         orgacom=None,
         seg3_l=None,
@@ -4687,6 +4696,40 @@ class ComparativeWebprogress(param.Parameterized):
 
         title = title if title else self.dashboard_title()
 
+        plot_area = [
+            pn.layout.HSpacer(background=bgcolor),
+        ]
+        for indicator in indicators:
+            plot_area.extend(
+                [
+                    self.pair_barplot(
+                        period_key=period_key,
+                        orgacom=orgacom,
+                        seg3_l=seg3_l,
+                        groups=groups,
+                        indicator=indicator,
+                    ),
+                    pn.layout.HSpacer(background=bgcolor),
+                ]
+            )
+
+        # TO BE CONTINUED !
+        # plot_area = [
+        #     pn.layout.HSpacer(background=bgcolor),
+        #     *[
+        #         *[
+        #             self.pair_barplot(
+        #                 period_key=period_key,
+        #                 orgacom=orgacom,
+        #                 seg3_l=seg3_l,
+        #                 groups=groups,
+        #                 indicator=indicator,
+        #             ),
+        #             pn.layout.HSpacer(background=bgcolor),
+        #         ] for indicator in indicators
+        #     ],            
+        # ]
+
         dashboard = pn.Column(
             pn.Row(
                 pn.layout.HSpacer(background=bgcolor),
@@ -4695,31 +4738,32 @@ class ComparativeWebprogress(param.Parameterized):
             ),
             pn.layout.VSpacer(background=bgcolor),
             pn.Row(
-                pn.layout.HSpacer(background=bgcolor),
-                self.pair_barplot(
-                    period_key=period_key,
-                    orgacom=orgacom,
-                    seg3_l=seg3_l,
-                    groups=groups,
-                    indicator=indicators[0],
-                ),
-                pn.layout.HSpacer(background=bgcolor),
-                self.pair_barplot(
-                    period_key=period_key,
-                    orgacom=orgacom,
-                    seg3_l=seg3_l,
-                    groups=groups,
-                    indicator=indicators[1],
-                ),
-                pn.layout.HSpacer(background=bgcolor),
-                self.pair_barplot(
-                    period_key=period_key,
-                    orgacom=orgacom,
-                    seg3_l=seg3_l,
-                    groups=groups,
-                    indicator=indicators[2],
-                ),
-                pn.layout.HSpacer(background=bgcolor),
+                *plot_area
+                # pn.layout.HSpacer(background=bgcolor),
+                # self.pair_barplot(
+                #     period_key=period_key,
+                #     orgacom=orgacom,
+                #     seg3_l=seg3_l,
+                #     groups=groups,
+                #     indicator=indicators[0],
+                # ),
+                # pn.layout.HSpacer(background=bgcolor),
+                # self.pair_barplot(
+                #     period_key=period_key,
+                #     orgacom=orgacom,
+                #     seg3_l=seg3_l,
+                #     groups=groups,
+                #     indicator=indicators[1],
+                # ),
+                # pn.layout.HSpacer(background=bgcolor),
+                # self.pair_barplot(
+                #     period_key=period_key,
+                #     orgacom=orgacom,
+                #     seg3_l=seg3_l,
+                #     groups=groups,
+                #     indicator=indicators[2],
+                # ),
+                # pn.layout.HSpacer(background=bgcolor),
             ),
             pn.layout.VSpacer(background=bgcolor),
             pn.pane.HTML(self.table(
